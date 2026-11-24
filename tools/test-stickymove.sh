@@ -55,14 +55,15 @@ check "  ... at its first move (before the drag distance) a bar press is the not
    && fnf '- (void)dm_noteTakeTouch:(UITouch *)t {' '$DN' | grep -qF 'if (![o.name hasPrefix:@\"dm.\"] && o.enabled) { o.enabled = NO; o.enabled = YES; }' \
    && fnf '- (void)dm_noteTakeTouch:(UITouch *)t {' '$DN' | grep -qF 'UIPanGestureRecognizer *pan = ((UIScrollView *)v).panGestureRecognizer; pan.enabled = NO; pan.enabled = YES;'"
 # ---- a pointer's press: the note's from the touch down (a click held on a note opened iPadOS's Home Screen editing before our menu's 0.75 s) ----
-PP=$(fnf '- (void)dm_notePointerPress:(UITouch *)t {' "$DN")
-check "a pointer's primary press on a note is the note's at its touch-down: asked right after the press is noted (with the finger's cue), on a note only" \
-  "printf '%s\n' \"\$EV\" | awk '/_holdMenu = NO; _trackMoved = NO;/{a=NR} /if \\(onNote\\) \\[self dm_noteHoldCueFor:t\\];/{b=NR} /if \\(onNote\\) \\[self dm_notePointerPress:t\\];/{c=NR} END{exit !(a && b == a + 1 && c == b + 1)}' \
-   && grep -qF -- '- (void)dm_notePointerPress:(UITouch *)t;' '$D'"
+# (1.8.8.4: the same take for our icons and the empty desktop, Desktop.h -dm_pointerPressTake: with DesktopHold.h's rule: test-desktophold.sh)
+PP=$(fnf '- (void)dm_pointerPressTake:(UITouch *)t {' "$D")
+check "a pointer's primary press on a note is the note's at its touch-down: asked right after the press is noted (with the finger's cue), by the desktop's pointer rule, a note always" \
+  "printf '%s\n' \"\$EV\" | awk '/_holdMenu = NO; _trackMoved = NO;/{a=NR} /if \\(onNote\\) \\[self dm_noteHoldCueFor:t\\];/{b=NR} /if \\(MSBDDesktopPointerPressOurs\\(pointer, _trackSecondary, onNote, DMDesktopFingerOwnMenu\\(\\)\\)\\) \\[self dm_pointerPressTake:t\\];/{c=NR} END{exit !(a && b == a + 1 && c == b + 1)}' \
+   && grep -qF 'return pointer && !secondary && (onNote || ownMenu);' ../statusbar/DesktopHold.h && grep -qF -- '- (void)dm_noteTakeTouch:(UITouch *)t;' '$D'"
 check "  ... a pointer's, primary (a secondary click keeps the note's own menu interaction), the press followed now; never a finger's" \
-  "printf '%s\n' \"\$PP\" | grep -qF 'if (![self dm_noteTracked] || !_trackPointer || _trackSecondary || !t || t != _track) return;'"
+  "printf '%s\n' \"\$PP\" | grep -qF 'if (!t || t != _track || !_trackPointer || _trackSecondary) return;'"
 check "  ... the press is the desktop's (the Dock's swipe down and Spotlight's pull refused) and every other gesture on it lets go now, the Home Screen's hold among them" \
-  "printf '%s\n' \"\$PP\" | awk '/_trackOwner = MSBDTouchDesktop;/{a=NR} /\\[self dm_noteTakeTouch:t\\];/{b=NR} END{exit !(a && b == a + 1)}'"
+  "printf '%s\n' \"\$PP\" | awk '/_trackOwner = MSBDTouchDesktop;/{a=NR} /\\[self dm_noteTakeTouch:t\\];/{b=NR} END{exit !(a && b == a + 1)}' && printf '%s\n' \"\$PP\" | grep -qF 'if ([self dm_noteTracked]) DM_FEATURE_MARK(\"sticky-note-pointer-press\");'"
 check "  ... and once more on the next turn of the main queue, for the same press only, still down (UIKit gives a touch its gestures around -sendEvent:)" \
   "printf '%s\n' \"\$PP\" | grep -qF 'dispatch_async(dispatch_get_main_queue(), ^{' \
    && printf '%s\n' \"\$PP\" | grep -qF 'if (s && x && s->_track == x && s->_trackAt == at && x.phase != UITouchPhaseEnded && x.phase != UITouchPhaseCancelled) [s dm_noteTakeTouch:x];'"

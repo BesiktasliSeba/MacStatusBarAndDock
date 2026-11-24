@@ -11,7 +11,8 @@ cp ../dock/dockmagnificationprefs/Resources/Root.plist "$W/bundles/DockMagnifica
 printf 'Package: com.example.someothertweak\nStatus: install ok installed\nVersion: 2.1\nName: Some Other Tweak\n\nPackage: com.example.aerial\nVersion: 5.0.1\nName: Aerial\n\nPackage: com.besiktasliseba.macstatusbaranddock\nVersion: 1.0.0\nName: MacStatusBar&Dock\n' > "$W/dpkg/status"
 printf '/.\n/var/jb/Library/MobileSubstrate/DynamicLibraries/SomeOtherTweak.dylib\n/var/jb/Library/MobileSubstrate/DynamicLibraries/SomeOtherTweak.plist\n' > "$W/dpkg/info/com.example.someothertweak.list"
 printf '/.\n/var/jb/Library/MobileSubstrate/DynamicLibraries/Aerial.dylib\n' > "$W/dpkg/info/com.example.aerial.list"
-D="-DDEBUG=1 -DMSBD_GUARD_RECORD=\"$W/record.txt\" -DMSBD_GUARD_VERDICTS=\"$W/verdicts.txt\" -DMSBD_DPKG_DIR=\"$W/dpkg\" -DMSBD_PREF_BUNDLES=\"$W/bundles\" -DMSBD_TWEAKNAME_CACHE=\"$W/name.txt\" -DMSBD_CAUSE_FILE=\"$W/causes.txt\""
+# (the debug build's version state under a name of this run's own: notifyd's states are the whole system's, an iPad's on its test lane)
+D="-DDEBUG=1 -DMSBD_GATE_FAKE_STATE=\"com.besiktasliseba.test-crashexplain.fakeversion.$$\" -DMSBD_GUARD_RECORD=\"$W/record.txt\" -DMSBD_GUARD_VERDICTS=\"$W/verdicts.txt\" -DMSBD_DPKG_DIR=\"$W/dpkg\" -DMSBD_PREF_BUNDLES=\"$W/bundles\" -DMSBD_TWEAKNAME_CACHE=\"$W/name.txt\" -DMSBD_CAUSE_FILE=\"$W/causes.txt\""
 # (1.8.7.7: CRASHEXPLAIN_COMMON=<folder>: CrashExplain.h and the headers it includes from there -- the code before the fix: its new checks must fail)
 C=${CRASHEXPLAIN_COMMON:-$PWD/../common}
 clang -fobjc-arc -Wall -Wno-unused-function $D -framework Foundation -DMSBD_TEST_EXPLAIN_H="\"$C/CrashExplain.h\"" -o "$W/t" test-crashexplain.m

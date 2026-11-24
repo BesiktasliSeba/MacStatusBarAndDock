@@ -98,7 +98,8 @@ int main(void) {
         ok(@"A due: 0 s and 600 s yes; 601 s, -6 s and NaN no", MSBDICleanAfterDue(T0, T0) && MSBDICleanAfterDue(T0 + 600, T0) && !MSBDICleanAfterDue(T0 + 601, T0)
            && !MSBDICleanAfterDue(T0 - 6, T0) && !MSBDICleanAfterDue(NAN, T0));
         {   // crash reports
-            char dir[] = "/tmp/msbd-icleanafter.XXXXXX", name[256];
+            char dir[1024], name[256];   // (in TMPDIR, the test's own: on an iPad's test lane /tmp is the iPad's own)
+            strlcpy(dir, [NSTemporaryDirectory() ?: @"/tmp" stringByAppendingPathComponent:@"msbd-icleanafter.XXXXXX"].fileSystemRepresentation, sizeof dir);
             ok(@"A crash: the test's report folder", mkdtemp(dir) != NULL);
             NSString *d = @(dir);
             double now = floor([[NSDate date] timeIntervalSince1970]);

@@ -23,7 +23,9 @@ static BOOL Is(NSString *got, NSString *container, NSString *app) { return app ?
 int main(void) {
     @autoreleasepool {
         FM = [NSFileManager defaultManager];
-        char tmpl[] = "/tmp/test-finderapps.XXXXXX";
+        // (in TMPDIR, the test's own: on an iPad's test lane /tmp is the iPad's own)
+        NSString *tmplS = [NSTemporaryDirectory() ?: @"/tmp" stringByAppendingPathComponent:@"test-finderapps.XXXXXX"];
+        char tmpl[1024]; strlcpy(tmpl, tmplS.fileSystemRepresentation, sizeof tmpl);
         if (!mkdtemp(tmpl)) { printf("FAIL: no temp folder\n"); return 1; }
         Root = [NSString stringWithUTF8String:tmpl];
 

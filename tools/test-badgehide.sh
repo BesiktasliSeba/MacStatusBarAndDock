@@ -35,6 +35,9 @@ run() {   # $1 Badge.x, $2 work dir, $3 quiet, $4 builds ("rel dbg"); the number
   perl "$LOGOS" "$X" > "$d/badge.m" 2>"$d/logos.txt" || { cat "$d/logos.txt"; echo "FAIL  logos.pl could not read $X"; return 99; }
   grep -q 'linker_option.*CydiaSubstrate' "$d/badge.m" || { echo "FAIL  logos.pl's output is not as expected (Substrate generator)"; return 99; }
   /usr/bin/sed -i '' '/linker_option.*CydiaSubstrate/d' "$d/badge.m"   # (the stand-in MSHookMessageEx instead)
+  # (the debug build's log and switch in the test's own folder: on an iPad's test lane /tmp is the iPad's own, where Settings' debug log lives)
+  /usr/bin/sed -i '' "s#\"/tmp/macsettings#\"$d/macsettings#g" "$d/badge.m"
+  grep -q '"/tmp/' "$d/badge.m" && { echo "FAIL  Badge.x names a /tmp path the test does not move: $(grep -o '"/tmp/[^"]*"' "$d/badge.m" | sort -u | tr '\n' ' ')"; return 99; }
   for b in ${4:-rel dbg}; do
     [ "$b" = dbg ] && defs=-DDEBUG=1 || defs=
     clang -target "$(uname -m)-apple-ios14.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" \

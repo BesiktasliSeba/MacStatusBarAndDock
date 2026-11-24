@@ -75,4 +75,19 @@ static inline int MSBDMSWScrollQuits(double dx, double dy, double vy, double til
     return vy <= -kMSBDMSWScrollFlickSpeed && -dy >= kMSBDMSWScrollFlickRise;
 }
 
+// The open view when the Home Screen comes (MacSwitcherButton.h DMMSWHomeTick). It goes when the Home Screen comes by another way (the Home gesture,
+// the app it was opened over quitting by itself), as iPadOS's own switcher goes; it stays when the view asked for the Home Screen itself, during a
+// desktop switch, and -- 1.8.8.4 (KT 24 Nov, iPadOS 18.5: a swipe up "abruptly" ended on the Home Screen, unlike on 15.6.1) -- when the app last in
+// front was quit from the view (Swipe Up to Quit): its end brings that Home, as the App Switcher stays after a swipe-up. The app in front is a
+// desktop's front window's app with the Stage Manager engine (16, 17, 18) and a full-screen app with any engine; Aerial's, Zetsu's and MilkyWay4's
+// windows are not, so their views stayed already.
+// frontAtOpen: an app was in front when the view opened; frontNow: an app is in front now; switching: a desktop switch is under way; ownHome: the
+// view asked for the Home Screen itself (within 3 s); lastFrontQuitHere: the app seen in front last was quit from the view.
+// 1: the view closes; 0: it stays. (tools/test-mswquithome.sh)
+static inline int MSBDMSWHomeCloses(int frontAtOpen, int frontNow, int switching, int ownHome, int lastFrontQuitHere) {
+    if (ownHome || switching) return 0;
+    if (!frontAtOpen || frontNow) return 0;
+    return !lastFrontQuitHere;
+}
+
 #endif

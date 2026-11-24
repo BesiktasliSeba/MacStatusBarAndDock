@@ -20,12 +20,16 @@ cleanup() {
 }
 trap cleanup EXIT
 G0=${CRASHGUARD_H:-../common/CrashGuard.h}
-clang -fobjc-arc -dynamiclib -framework Foundation -o "$W/MacCrashBlame.dylib" ../loader/CrashBlameHelper.m || exit 1
+# (the blame helper with the test's own files, as test-crashguardlook.sh builds it: the defaults are the iPad's real crash map, death record, Choicy
+#  settings and tweak folder, which an iPad's test lane would read and write)
+mkdir -p "$W/tweaks"
+clang -fobjc-arc -dynamiclib -framework Foundation -DMSBD_CRASHMAP="\"$W/missing-crashmap.txt\"" -DMSBD_CAUSE_FILE="\"$W/causes.txt\"" \
+  -DMSBD_CHOICY_PREFS="\"$W/choicy.plist\"" -DMSBD_BLAME_TWEAK_DIR="\"$W/tweaks\"" -o "$W/MacCrashBlame.dylib" ../loader/CrashBlameHelper.m || exit 1
 build() {   # $1 the guard's header (as the test includes it), $2 the program
   clang -Wall -Wno-unused-function -framework CoreFoundation -iquote ../common -DMSBD_TEST_GUARD_H="\"$1\"" \
     -DMSBD_GUARD_FILE="\"$W/guard.txt\"" -DMSBD_GUARD_REPORTS="\"$R\"" -DMSBD_GUARD_VERDICTS="\"$W/verdicts.txt\"" \
     -DMSBD_GUARD_RECORD="\"$W/record.txt\"" -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" -DMSBD_GUARD_NOTICE_LIB="\"$W/missing-notice.dylib\"" \
-    -DMSBD_GUARD_BLAME_LIB="\"$W/MacCrashBlame.dylib\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$W/missing-crashmap.txt\"" \
+    -DMSBD_GUARD_BLAME_LIB="\"$W/MacCrashBlame.dylib\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$W/missing-crashmap.txt\"" -DMSBD_CAUSE_FILE="\"$W/causes.txt\"" \
     -DMSBD_DISP_DOMAIN="\"$DISP\"" -DMSBD_DISP_MSB_DOMAIN="\"$DISP.msb\"" -DMSBD_DISP_DOCK_DOMAIN="\"$DISP.dock\"" \
     -o "$2" test-crashguardhang.c
 }

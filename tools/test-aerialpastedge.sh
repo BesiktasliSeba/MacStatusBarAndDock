@@ -1,6 +1,7 @@
 #!/bin/bash
 # test-aerialpastedge.sh: an Aerial window (5.x and 3.0) dragged past the screen's left, right and bottom edges goes there as on every engine, only
-# its title bar's top held under the menu bar, and stays (1.8.8.3, GitHub #19): see test-aerialpastedge.m. The real code is cut out of
+# its title bar's top held under the menu bar, and stays (1.8.8.3, GitHub #19); a window in Aerial's Lock stays where it is, no snap at the end of a
+# drag (1.8.8.4): see test-aerialpastedge.m. The real code is cut out of
 # statusbar/StatusBar.x (APE_SB_X: another copy, e.g. the code before the change): Aerial 5's drag section (from its header to the end of
 # DMA5DragGuard's implementation), Aerial 3.0's drag steps (DMAerialPanBefore ... DMAerialGestureAfter) and its %hook AerialStage -handlePan: body,
 # DMRememberStageFrame with DMSetStageIntent, DMKeepStagePlace and DMAerial5SyncState, DMA5WindowFromStage; UIKit's main screen as the code asks it
@@ -18,6 +19,9 @@ dragcut() { awk 'index($0, "// ---- Aerial 5.0: a window moves by its title stri
 CHAIN=('static void DMAerial5SyncState(UIView *stage, CGRect frame) {' 'static void DMKeepStagePlace(UIView *stage, CGRect frame) {'
        'static void DMSetStageIntent(UIView *stage, CGRect frame) {' 'static void DMRememberStageFrame(UIView *stage) {' 'static CGRect DMA5WindowFromStage(CGRect f) {')
 PAN='- (void)handlePan:(id)gesture {'
+# (1.8.8.4 review: the 0.2 s watcher's "a move or a resize by hand under way", whose end keeps the place, leaves Fit's tiles and saves)
+LIVE=('static BOOL DMAerial5GestureLive(UIView *stage) {' 'static BOOL DMAerial5HandGestureLive(UIView *stage) {')
+WATCH='static void DMAerial5Watch(void) {'
 scr() { sed 's/\[UIScreen mainScreen\]\.bounds/KScreenBounds()/g'; }
 
 run() {   # $1 StatusBar.x, $2 work dir, $3 quiet; the number of failed checks (99: the code could not be cut out or built)
@@ -30,6 +34,8 @@ run() {   # $1 StatusBar.x, $2 work dir, $3 quiet; the number of failed checks (
   for h in "${CHAIN[@]}"; do fn "$X" "$h"; done | scr > "$d/ape-chain.inc"
   blockcut "$X" | scr > "$d/ape-30.inc"
   dragcut "$X" | scr > "$d/ape-drag.inc"
+  for h in "${LIVE[@]}"; do [ -n "$(fn "$X" "$h")" ] || { echo "FAIL  $X: no \"$h\""; return 99; }; done
+  for h in "${LIVE[@]}"; do fn "$X" "$h"; done > "$d/ape-live.inc"
   awk -v h="$PAN" 'index($0, h) == 1 {f=1} f {print} f && /^[}]/ {exit}' "$X" | sed 's/^\( *\)%orig;/\1[self k_origPan:gesture];/' > "$d/ape-hook.inc"
   grep -q '%orig' "$d/ape-hook.inc" && { echo "FAIL  $X: a %orig left in the hook cut out"; return 99; }
   clang -target "$(uname -m)-apple-ios14.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" \
@@ -52,6 +58,12 @@ run() {   # $1 StatusBar.x, $2 work dir, $3 quiet; the number of failed checks (
   if awk '/^- \(BOOL\)gestureRecognizer:\(UIGestureRecognizer \*\)g shouldReceiveTouch:\(UITouch \*\)touch \{$/{f=1} f && /== kDMTitleAerial\) DMAerial30NoteDown\(g.view, touch\);$/{a=NR} f && /if \(!DMTitleTapOnBar\(g, touch\)\) return NO;/{b=NR} f && /^[}]/{exit} END{exit !(a && b && a < b)}' "$T0"; then
     [ -n "$q" ] || echo "PASS  TitleBarTap.h: the title strip's double tap notes each touch on an Aerial window (Aerial 3.0's touch-down) before its strip check"
   else [ -n "$q" ] || echo "FAIL  TitleBarTap.h: Aerial 3.0's touch-down is not noted where every touch on its window comes"; n=$((n + 1)); fi
+  # (1.8.8.4 review) the 0.2 s watcher takes a pan for a move by hand only by DMAerial5HandGestureLive (not on a window in Aerial's Lock), and its
+  # end is the one that keeps the place, leaves Fit's tiles and saves
+  if fn "$X" "$WATCH" | grep -qF 'BOOL live = DMAerial5HandGestureLive(stage), was = [objc_getAssociatedObject(stage, kA5GestureKey) boolValue];' \
+     && fn "$X" "$WATCH" | awk '/\} else if \(!live && was\) \{/{f=1} f && /DMFitGroupForget\(bundle\);/{a=1} f && /DMSaveWindowState\(\);/{b=1} END{exit !(a && b)}'; then
+    [ -n "$q" ] || echo "PASS  StatusBar.x: Aerial 5's 0.2 s watcher counts a move by hand by DMAerial5HandGestureLive (a locked window's drag is none), its end keeps the place, leaves Fit's tiles and saves"
+  else [ -n "$q" ] || echo "FAIL  StatusBar.x: Aerial 5's 0.2 s watcher does not count a move by hand as tested"; n=$((n + 1)); fi
   return $n
 }
 
@@ -74,7 +86,12 @@ if [ -z "$APE_SB_X" ]; then
   mtf "the place not kept at the end of a drag area's drag" 's/\n    DMSnapMoveEnded\(stage\);\n    DMRememberStageFrame\(stage\);\n\}/\n    DMSnapMoveEnded(stage);\n}/'
   mtf "a drag cut short not followed (its stage recogniser)" 's/ \|\| st == UIGestureRecognizerStateEnded \|\| st == UIGestureRecognizerStateCancelled\)/ || st == UIGestureRecognizerStateEnded)/'
   mtf "a drag cut short not followed (the drag area)" 's/if \(g\.state == UIGestureRecognizerStateEnded \|\| g\.state == UIGestureRecognizerStateCancelled\) DMA5DragFollow\(stage, g, NO\);/if (g.state == UIGestureRecognizerStateEnded) DMA5DragFollow(stage, g, NO);/'
-  mtf "Aerial's Lock not asked" 's/if \(down\.count != 2 \|\| DMAerialStageLocked\(stage\)\) return;/if (down.count != 2) return;/'
+  mtf "Aerial 5: a locked window's drag taken as a move by hand (its stage recogniser)" 's/\n    if \(DMAerialLockedDrag\(stage, g\)\) return;   \/\/ \(Aerial.s Lock: no move by hand[^\n]*//'
+  mtf "Aerial 5.1: a locked window's drag taken as a move by hand (its drag area)" 's/\n    if \(DMAerialLockedDrag\(stage, g\)\) return;   \/\/ \(as -dragTrace:\)//'
+  mtf "Aerial 3.0: a locked window's drag marked as one by hand" 's/\n        if \(DMAerialStageLocked\(stage\)\) \{ DMAerialLockedNote\(stage\); return YES; \}//'
+  mtf "Aerial's Lock never read (its reader always says unlocked)" 's/return iv && \*\(\(uint8_t \*\)\(__bridge void \*\)stage \+ ivar_getOffset\(iv\)\) != 0;/return NO;/'
+  mtf "Aerial 5's watcher: a locked window's drag a move by hand (its reader without the Lock)" 's/return !DMAerialStageLocked\(stage\) && DMAerial5GestureLive\(stage\);/return DMAerial5GestureLive(stage);/'
+  mtf "Aerial 5's watcher: every pan a move by hand again (its own live read)" 's/BOOL live = DMAerial5HandGestureLive\(stage\), was/BOOL live = DMAerial5GestureLive(stage), was/'
   mtf "the trim baseline not followed" 's/\n        DMAerialTrimFollow\(stage, want\.x - c\.x, want\.y - c\.y\);//'
   mtf "3.0: no follow after Aerial's step" 's/\n    DMAerialPanFollow\(\(UIView \*\)self, gesture, YES\);   \/\/[^\n]*//'
   mtf "3.0: the touch-down not noted (the start where UIKit began the pan, 12 pt on)" 's/    if \(gAerialFlavor != 3 \|\| !stage\.superview \|\| !touch\) return;/    return;/'

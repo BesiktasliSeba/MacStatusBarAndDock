@@ -41,10 +41,10 @@ check "the Dock's real root: a child of the window's own on 15.6.1" \
   "grep -q 'if (\[vc isKindOfClass:rc\]) { DMDockSideApplyToRoot(vc);' $D"
 check "the desktop's files stay too: their saved places are shares of the area as at the bottom" \
   "grep -q 'a = \[self dm_placesArea:a\]; return CGPointMake' ../statusbar/Desktop.h && grep -q 'a = \[self dm_placesArea:a\]; return @\[' ../statusbar/Desktop.h && grep -q 'double MSBDDockHeightAtBottom(void)' $D"
-check "the Home Screen keeps out of the Dock: each page's list placed beside it by SpringBoard's own frame method, shape-checked, hooked with a side chosen only" \
-  "grep -q 'return DMDockSideHomeFrame((UIView \*)self, f, index);' $D && grep -q '{ %init(DockSideHomeLists); gDockSideHomeHooked = YES; }' $D && grep -q 'return MSBDDockSideHomeListFrame(f, side, gDockSideHomeRoom, fl, fr);' $D"
+check "the Home Screen keeps out of the Dock: each page's list placed beside it by SpringBoard's own frame method, shape-checked, hooked with a side chosen or the Recent Windows Strip's band only (its room 0: the side Dock's own frame)" \
+  "grep -q 'return DMDockSideHomeFrame((UIView \*)self, f, index);' $D && grep -q '{ %init(DockSideHomeLists); gDockSideHomeHooked = YES; }' $D && grep -q 'return MSBDHomeListFrameTwoSided(f, side, side ? gDockSideHomeRoom : 0.0, MSBDHomeStripOnRight(gDockPosition, f.size.width, f.size.height), gHomeStripRoom, fl, fr);' $D"
 check "  ... in portrait and at the bottom iPadOS's own frames: decided by the page's own shape" \
-  "grep -q 'int side = MSBDDockSideFor(gDockPosition, f.size.width, f.size.height);' $D"
+  "grep -q 'int side = gDockPosition != MSBDDockBottom && gDockSideHomeRoom > 0.0 ? MSBDDockSideFor(gDockPosition, f.size.width, f.size.height) : MSBDDockBottom;' $D"
 check "  ... the room is the Dock's at rest, measured where the side Dock lays out (never the magnified icons), and moves the pages at once" \
   "grep -q 'DMDockSideHomeLaidOut(DMDockSideRestingRoom((UIView \*)self, platter));' $D && grep -q 'if (DMDockSidePresentedNow() || !(gDockSideHomeRoom > 0.0))' $D && grep -q 'DMDockSideHomeDockBack();' $D && grep -q 'DMDockSideHomeRelayout(@\"the Dock.s size\");' $D && grep -q 'DMDockSideHomeRelayout(side ? @\"the Dock at a side\" : @\"the Dock at the bottom\");' $D"
 check "  ... the desktop's files stay on their page of the screen when page 1's list moves" \

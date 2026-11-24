@@ -716,11 +716,14 @@ static CGRect DMNativeClamp(CGRect f, CGSize minSize) {
     f.origin.x = MAX(CGRectGetMinX(d) - f.size.width + 80.0, MIN(f.origin.x, CGRectGetMaxX(d) - 80.0));
     return f;
 }
+static BOOL DMRStripWindowDrag(UIView *win, UIGestureRecognizer *g, UIGestureRecognizerState state);   // (RecentStrip.h: the Recent Windows Strip steps aside for a drag over it)
 - (void)dm_move:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateBegan) { _panStart = self.frame; DMNativeSetActive(self); }
     CGPoint d = [g translationInView:self.superview];
     CGRect f = _panStart; f.origin.x += d.x; f.origin.y += d.y;
     self.frame = DMNativeClamp(f, self.minSize);
+    // (the Recent Windows Strip, 1.8.8.4: over its cards it steps aside at once; let go at its edge, the window goes in and comes back where it was)
+    if (DMRStripWindowDrag(self, g, g.state)) return;
     if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; DMTitleRecordMovedView(self); [self dm_keepOutOfSideDock:MSBDSnapMove]; }   // (moved by hand: no way back of the title bar's from before it, P4-1)
 }
 // (Settings > Dock > Position: let go under a Dock at a screen side it comes out of it, as an engine's window does: DMDockSideKept. On the bottom nothing changes.)
@@ -753,6 +756,8 @@ static CGRect DMNativeResized(CGRect start, CGPoint d, int tag, CGSize minSize, 
     self.frame = DMNativeResized(_panStart, d, (int)g.view.tag, self.minSize, DMNativeDesktop(), NO);
     if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; DMTitleRecordMovedView(self); [self dm_keepOutOfSideDock:(g.view.tag == 0 ? MSBDSnapLeft : MSBDSnapRight) | MSBDSnapBottom]; }   // (as a move)
 }
+static CGRect DMRStripNativeFlight(DMNativeWindow *w, BOOL into);   // (RecentStrip.h: the Recent Windows Strip's card a window flies into or comes out of)
+static void DMRStripNativeLanded(DMNativeWindow *w);
 - (void)show {
     UIView *host = DMNativeHost();
     if (!host) return;
@@ -765,7 +770,9 @@ static CGRect DMNativeResized(CGRect start, CGPoint d, int tag, CGSize minSize, 
     DMNativeUpdateRotation();   // (now that the layer is on screen: its real turn)
     self.frame = DMNativeClamp(self.frame, self.minSize);
     DMNativeSetActive(self);
-    CGRect target = (self.dm_wasMinimized && !MSBReduceMotion()) ? DMNativeDockTarget() : CGRectNull;   // (back from the Dock: grows out of Finder's icon)
+    // (back from the Dock: grows out of Finder's icon -- or out of its app's card in the Recent Windows Strip when that card is on the screen, 1.8.8.4)
+    CGRect strip = self.dm_wasMinimized ? DMRStripNativeFlight(self, NO) : CGRectNull;
+    CGRect target = (self.dm_wasMinimized && !MSBReduceMotion()) ? (CGRectIsNull(strip) || !gNativeRotator ? DMNativeDockTarget() : [gNativeRotator convertRect:strip fromCoordinateSpace:[UIScreen mainScreen].coordinateSpace]) : CGRectNull;
     self.dm_wasMinimized = NO;
     if (!CGRectIsNull(target)) {
         self.transform = [self dm_transformToRect:target]; self.alpha = 0.2;
@@ -813,19 +820,23 @@ static CGRect DMNativeDockTarget(void) {
     return CGAffineTransformScale(t, k, k);
 }
 - (void)minimize {   // (put away into the Dock's Finder icon; the icon / the Window menu / File > New Finder Window bring it back)
-    CGRect target = DMNativeDockTarget();
+    // (into its app's card in the Recent Windows Strip while that is on, 1.8.8.4: RecentStrip.h; else the Dock's Finder icon as before)
+    CGRect strip = DMRStripNativeFlight(self, YES);
+    CGRect target = CGRectIsNull(strip) || !gNativeRotator ? DMNativeDockTarget() : [gNativeRotator convertRect:strip fromCoordinateSpace:[UIScreen mainScreen].coordinateSpace];
     if (!CGRectIsNull(target) && !MSBReduceMotion()) {
         self.userInteractionEnabled = NO;
         CGAffineTransform t = [self dm_transformToRect:target];
         [UIView animateWithDuration:0.32 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ self.transform = t; self.alpha = 0.2; } completion:^(BOOL f) {
             self.transform = CGAffineTransformIdentity; self.alpha = 1; self.userInteractionEnabled = YES;
             [self dm_minimizeNow];
+            DMRStripNativeLanded(self);
         }];
         DMNativeWindow *next = nil; for (DMNativeWindow *w in gNativeWindows) if (!w.hidden && w != self) next = w;
         DMNativeSetActive(next);
         return;
     }
     [self dm_minimizeNow];
+    DMRStripNativeLanded(self);
 }
 - (void)dm_minimizeNow {
     self.dm_wasMinimized = YES;

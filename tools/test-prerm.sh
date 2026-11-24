@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-prerm.sh: runs layout/DEBIAN/prerm on the Mac with /var/jb pointing into a scratch folder, launchctl and the root helper as stubs that write
+# test-prerm.sh: runs layout/DEBIAN/prerm on the Mac with every path it names in a scratch folder (tools/scratch-root.sh), launchctl and the root helper as stubs that write
 # down how they were called, for every way dpkg runs a prerm, and checks what it asks: the helper stopped first; Keep Tailspin Off's false given
 # back on every way out of the version (an upgrade or a downgrade too, so an older version never inherits it: code review), never on
 # failed-upgrade (the helper on disk is the old version's then, which would take an unknown flag for its daemon start); the full give-back only
@@ -9,8 +9,9 @@ cd "$(dirname "$0")/.."
 W=$(mktemp -d "${TMPDIR:-/tmp}/msbd-prerm.XXXXXX")
 trap 'rm -rf "$W"' EXIT
 J="$W/root/var/jb"
-sed -e "s#/var/jb#$J#g" layout/DEBIAN/prerm > "$W/prerm"; chmod +x "$W/prerm"
-sed -e "s#/var/jb#$J#g" layout/DEBIAN/postrm > "$W/postrm"; chmod +x "$W/postrm"
+. tools/scratch-root.sh   # (every absolute path the scripts name under $W/root, checked: on an iPad's test lane /var/jb and /var/mobile are real)
+left=$(scratch_copy layout/DEBIAN/prerm "$W/root" "$W/prerm") || { echo "FAIL  the prerm copy still names real paths (never run): $left"; exit 1; }
+left=$(scratch_copy layout/DEBIAN/postrm "$W/root" "$W/postrm") || { echo "FAIL  the postrm copy still names real paths (never run): $left"; exit 1; }
 CALLS="$W/calls"; DA="$W/da-key"; STATE="$J/var/lib/sshtoggled-engines/tailspin.plist"
 setup() {
     rm -rf "$W/root"; : > "$CALLS"

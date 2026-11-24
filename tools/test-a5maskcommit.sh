@@ -6,6 +6,10 @@
 # the Mac (Mac Catalyst) with real Core Animation commits, in a release and a DEBUG build; then the site checks; then made-to-fail copies, each
 # must fail. T16-T21 (1.8.8, H2 row 3 on Aerial 5.1): the fit-pass answer counts only what it put back, so a window minimized at Fill that the pass
 # shrank out of sight is put back by the commit that shows it again (Z8, the counter, the turn), and a fight on screen is still left to Aerial.
+# 1.8.8.4: a window's corners are a clip on its app's picture; only a holder with no picture yet has the mask. Every case runs with the app's
+# picture in the holders (the clip, committed at the holder's bounds) and with "twopictures", two in each (the mask, as before); the made-to-fail
+# copies run both. T22-T24 (its review): Aerial's layout in the commit itself moves the picture past the holder's bottom, adds a second one or fills
+# the holder: the commit pass's look for pending layout covers a clipped window too, so that commit carries the mask (or the fill taken off).
 cd "$(dirname "$0")" || exit 1
 SDK=$(xcrun --show-sdk-path 2>/dev/null || echo /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk)
 FW="$SDK/System/iOSSupport/System/Library/Frameworks"
@@ -89,9 +93,12 @@ sites() {   # $1 StatusBar.x, $2 quiet: the number of site checks that fail
   # focus, key window or level change either; 1.8.8.2's tvbar made DMNativeTouchBegan return first while a menu or dialog of ours is open on the
   # touched screen: it only takes away one making-active (a Finder window under a menu row), never adds a focus, key window or level change;
   # 1.8.8.3 made DMNativeTouchBegan return for a key of our own on-screen keyboard before its hit test: again it only takes away a making-active
-  # (the Finder window under the key), never adds a focus, key window or level change)
-  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = dcfde8e7c812e94e ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = 75f2a400732e9efb ] \
-     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8, 1.8.8.1, 1.8.8.2 or 1.8.8.3 (no focus, key window or level change; NativeWindow.h: 1.8.8.3's key return)"
+  # (the Finder window under the key), never adds a focus, key window or level change;
+  # 1.8.8.4's Recent Windows Strip: -dm_move: hands a window drag to the strip first (let go at its edge, the window is minimized as by its yellow
+  # light, the same making-active of the window behind), and -minimize and -show ask it for the rect a window flies into or grows out of
+  # and tell it a window landed: an animation's target, no focus, key window or level change
+  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = 1a503625ae373385 ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = 75f2a400732e9efb ] \
+     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8, 1.8.8.1, 1.8.8.2 or 1.8.8.3 (no focus, key window or level change; NativeWindow.h: 1.8.8.3's key return, and the Recent Windows Strip's calls of 1.8.8.4)"
   else no "NativeWindow.h, Finder.h or KeyboardBehind.h changed"; fi
   # the trace and the kill switch are debug only
   [ "$(ifdebug "$X" 'return DMTestFlag("/tmp/msb-a5-maskold");')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskDebugAtCommit(void) {')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskTrace(UIView *stage, CGSize was, CGSize now) {')" = yes ] \
@@ -106,6 +113,8 @@ run() {   # $1 StatusBar.x, $2 dir, $3 quiet, $4 debug values: the number of che
     [ -n "$q" ] || echo "-- $([ $dbg = 1 ] && echo DEBUG || echo release)"
     out=$("$2/t-$dbg" 2>/dev/null); r=$?
     out2=$("$2/t-$dbg" T15 2>/dev/null); r2=$?; out="$out"$'\n'"$out2"; [ $r2 != 0 ] && r=$r2
+    out2=$("$2/t-$dbg" twopictures 2>/dev/null); r2=$?; out="$out"$'\n'"$out2"; [ $r2 != 0 ] && r=$r2
+    out2=$("$2/t-$dbg" T15 twopictures 2>/dev/null); r2=$?; out="$out"$'\n'"$out2"; [ $r2 != 0 ] && r=$r2
     [ -n "$q" ] || echo "$out"
     [ $r -ge 128 ] && { [ -n "$q" ] || echo "FAIL  ended by signal $((r - 128))"; }
     n=$((n + $(echo "$out" | grep -c '^FAIL'))); [ $r != 0 ] && [ -z "$(echo "$out" | grep '^FAIL')" ] && n=$((n + 1))
@@ -126,7 +135,7 @@ if [ -z "$A5M_SB_X" ]; then
     cmp -s "$c" "$S0" && { echo "FAIL  made-to-fail copy \"$1\": nothing changed"; rc=1; return; }
     build "$c" "$d/w" q "1" >/dev/null; local b=$?
     [ $b = 99 ] && { echo "FAIL  made-to-fail copy \"$1\": did not build"; rc=1; return; }
-    local out; out=$("$d/w/t-1" 2>/dev/null; "$d/w/t-1" T15 2>/dev/null); local n=$(echo "$out" | grep -c '^FAIL')
+    local out; out=$("$d/w/t-1" 2>/dev/null; "$d/w/t-1" T15 2>/dev/null; "$d/w/t-1" twopictures 2>/dev/null; "$d/w/t-1" T15 twopictures 2>/dev/null); local n=$(echo "$out" | grep -c '^FAIL')
     if [ "$n" -gt 0 ]; then echo "PASS  caught: $1 ($(echo "$out" | grep '^FAIL' | sed -E 's/^FAIL  (T[0-9]+).*/\1/' | sort -u | tr '\n' ' '))"; else echo "FAIL  not caught: $1"; rc=1; fi
   }
   k=0
@@ -135,6 +144,7 @@ if [ -z "$A5M_SB_X" ]; then
   mtf "no handler after the commit's layout" 's/        \(\(void \(\*\)\(id, SEL, id, int\)\)objc_msgSend\)\(\[CATransaction class\], NSSelectorFromString\(\@"addCommitHandler:forPhase:"\), afterLayout, 1\);[^\n]*\n//'
   mtf "the layout check never true" 's/layoutLater = v\.layer\.needsLayout;/layoutLater = NO;/'
   mtf "the layout check always true (a handler every turn)" 's/layoutLater = v\.layer\.needsLayout;/layoutLater = YES;/'
+  mtf "the layout look only for a holder with our mask (a clipped window's own layout left unchecked)" 's/        for \(UIView \*v = st; v && !layoutLater;/        if (objc_getAssociatedObject(DMStageInnerView(st), kA5MaskKey) && DMStageInnerView(st).layer.mask) for (UIView *v = st; v && !layoutLater;/'
   mtf "the commit pass without the DMA5MacGeometry guard" 's/    if \(!DMA5MacGeometry\(\) \|\| gDMScreenOff \|\| !gA5StageCache\.count\) return;/    if (gDMScreenOff || !gA5StageCache.count) return;/'
   mtf "the debug kill switch not read" 's/    return DMTestFlag\("\/tmp\/msb-a5-maskold"\);/    return NO;/'
   mtf "1.8.7.8's order (no mask at the put-back, none at the commit)" 's/\n    if \(DMA5MacGeometry\(\) && !DMA5MaskOld\(\)\) DMA5SyncHostMaskBy\(stage, "the put-back"\);//; s/    DMA5CatchNewStagesPass\(\);\n    DMA5MasksAtCommit\(\);/    DMA5CatchNewStagesPass();/'

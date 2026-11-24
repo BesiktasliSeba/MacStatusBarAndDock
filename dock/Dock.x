@@ -784,6 +784,10 @@ static id DMObj(id o, NSString *sel);   // (below)
 static id DMDockSideController(void);   // (below)
 static CGFloat gDockSideHomeRoom = 0;    // (how far the side Dock reaches into the screen at rest; 0 until it has laid out at a side)
 static BOOL gDockSideHomeHooked = NO, gDockSideHomeAsking = NO;
+// (1.8.8.4: the Recent Windows Strip's band on the Home Screen, MacStatusBar's statusbar/RecentStrip.h through MSBDHomeStripRoom below: its room, 0
+//  none. Its side is never the Dock's -- the strip goes to the right with the Dock at Left --, taken from each page's own shape (DockSide.h
+//  MSBDHomeStripOnRight), so a turn lays the pages out once. The pages keep it free beside the Dock's own room.)
+static double gHomeStripRoom = 0;
 static UIView *DMDockSideHomeRootView(void) {
     Class c = objc_getClass("SBIconController"); SEL e = NSSelectorFromString(@"sharedInstanceIfExists");
     id ic = c && [(id)c respondsToSelector:e] ? ((id (*)(id, SEL))objc_msgSend)((id)c, e) : DMObj((id)c, @"sharedInstance");   // (17+: never made by us)
@@ -860,9 +864,10 @@ static void DMDockSideHomeDockBack(void) {
 // A page's icon list frame with the Dock at a side: the layout's free space read from that list's insets (as SpringBoard lays the icons out with them, Atria's
 // too), the room taken from it in each side's share. As iPadOS gives it in portrait, at the bottom, and before the side Dock has laid out once.
 static CGRect DMDockSideHomeFrame(UIView *rfv, CGRect f, unsigned long long index) {
-    if (gDockPosition == MSBDDockBottom || !(gDockSideHomeRoom > 0.0) || gDockSideHomeAsking) return f;
-    int side = MSBDDockSideFor(gDockPosition, f.size.width, f.size.height);
-    if (!side || (rfv.window && !DMDockOnMainScreen(rfv.window))) return f;
+    BOOL strip = gHomeStripRoom > 0.0;   // (the Recent Windows Strip's band too, 1.8.8.4: with no band, the side Dock's own frames, byte for byte)
+    if ((!strip && (gDockPosition == MSBDDockBottom || !(gDockSideHomeRoom > 0.0))) || gDockSideHomeAsking) return f;
+    int side = gDockPosition != MSBDDockBottom && gDockSideHomeRoom > 0.0 ? MSBDDockSideFor(gDockPosition, f.size.width, f.size.height) : MSBDDockBottom;
+    if ((!side && !strip) || (rfv.window && !DMDockOnMainScreen(rfv.window))) return f;
     SEL at = NSSelectorFromString(@"iconListViewAtIndex:"), ins = NSSelectorFromString(@"layoutInsetsForOrientation:"), lo = NSSelectorFromString(@"layoutOrientation");
     if (![rfv respondsToSelector:at]) return f;
     gDockSideHomeAsking = YES;   // (nothing below may come back here)
@@ -879,7 +884,7 @@ static CGRect DMDockSideHomeFrame(UIView *rfv, CGRect f, unsigned long long inde
     if (!known) return f;   // (nothing to keep the layout's shape by: as iPadOS gives it)
     double fl = 0, fr = 0;
     MSBDDockSideHomeFree(i.left, i.right, rfv.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft, &fl, &fr);
-    return MSBDDockSideHomeListFrame(f, side, gDockSideHomeRoom, fl, fr);
+    return MSBDHomeListFrameTwoSided(f, side, side ? gDockSideHomeRoom : 0.0, MSBDHomeStripOnRight(gDockPosition, f.size.width, f.size.height), gHomeStripRoom, fl, fr);
 }
 // Edit Home Screen's own buttons (Add Widget at the top left, Done at the top right: SBRootFolderView's widgetButton and doneButton) keep out of the Dock the same
 // way: the one on the Dock's side moves over by the room after SpringBoard has laid the view out, from SpringBoard's own frame for it each time (the frame it
@@ -888,6 +893,7 @@ static const void *kDockSideHomeButtonBase = &kDockSideHomeButtonBase, *kDockSid
 static void DMDockSideHomeEditButtons(UIView *rfv) {
     CGSize b = rfv.bounds.size;
     int side = gDockPosition != MSBDDockBottom && gDockSideHomeRoom > 0.0 ? MSBDDockSideFor(gDockPosition, b.width, b.height) : MSBDDockBottom;
+    if (rfv.window && !DMDockOnMainScreen(rfv.window)) return;
     for (NSString *k in @[@"widgetButton", @"doneButton"]) {
         UIView *v = DMObj(rfv, k);
         if (![v isKindOfClass:[UIView class]] || v.superview != rfv) continue;
@@ -896,6 +902,11 @@ static void DMDockSideHomeEditButtons(UIView *rfv) {
         CGRect f = apple;
         if (side == MSBDDockLeft && CGRectGetMinX(f) < gDockSideHomeRoom) f.origin.x += gDockSideHomeRoom;
         else if (side == MSBDDockRight && CGRectGetMaxX(f) > b.width - gDockSideHomeRoom) f.origin.x -= gDockSideHomeRoom;
+        // (the Recent Windows Strip's band, on the other side: the button there moves off it by the band, as the side Dock's does, 1.8.8.4; its side
+        //  from the view's own shape, as the pages')
+        BOOL stripRight = MSBDHomeStripOnRight(gDockPosition, b.width, b.height);
+        if (gHomeStripRoom > 0.0 && !stripRight && CGRectGetMinX(f) < gHomeStripRoom) f.origin.x += gHomeStripRoom;
+        else if (gHomeStripRoom > 0.0 && stripRight && CGRectGetMaxX(f) > b.width - gHomeStripRoom) f.origin.x -= gHomeStripRoom;
         if (CGRectEqualToRect(f, v.frame)) continue;
         objc_setAssociatedObject(v, kDockSideHomeButtonBase, [NSValue valueWithCGRect:apple], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(v, kDockSideHomeButtonSet, [NSValue valueWithCGRect:f], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -3579,6 +3590,37 @@ static void DMDockSideHookFadeIn(void) {
 // Nothing reached from it asks UIKit for its screens or windows: UIKit's first set-up there can wait on FrontBoard's listener thread, which waits
 // on dyld (GitHub #16, statusbar/StatusBar.x gDMInCtor). Mac test: tools/test-ctornouikit.sh.
 static BOOL gDMInCtor = NO;
+// The Home Screen's hooks, once, for a side Dock or the Recent Windows Strip's band (MSBDHomeStripRoom, 1.8.8.4): each page's list frame, Edit Home
+// Screen's buttons, and the Dock's presentation end (a size taken while away), each on its exact type.
+static void DMDockSideHomeHook(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class rv = objc_getClass("SBRootFolderView");
+    Method lf = rv ? class_getInstanceMethod(rv, NSSelectorFromString(@"_iconListFrameForPageRect:atIndex:")) : NULL;
+    if (lf && !strcmp(method_getTypeEncoding(lf) ?: "", "{CGRect={CGPoint=dd}{CGSize=dd}}56@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16Q48")) { %init(DockSideHomeLists); gDockSideHomeHooked = YES; }
+    else DMLog(@"[dockside] the Home Screen's page frames are not as expected here: its icons stay where they are with the Dock at a side");
+    Method lay = rv ? class_getInstanceMethod(rv, NSSelectorFromString(@"_layoutSubviews")) : NULL;
+    if (gDockSideHomeHooked && lay && !strcmp(method_getTypeEncoding(lay) ?: "", "v16@0:8")) %init(DockSideHomeButtons);
+    Method back = class_getInstanceMethod(objc_getClass("SBFloatingDockController"), NSSelectorFromString(@"floatingDockRootViewControllerDidEndPresentationTransition:"));
+    if (gDockSideHomeHooked && back && !strcmp(method_getTypeEncoding(back) ?: "", "v24@0:8@16")) %init(DockSideHomeBack);
+    else if (gDockSideHomeHooked) DMLog(@"[dockside] the Dock's presentation end is not as expected here: a size it takes while away waits for its next layout");
+}
+// The Recent Windows Strip's band on the Home Screen (MacStatusBar's statusbar/RecentStrip.h asks this through dlsym, 1.8.8.4): its room (0: none).
+// The side it hands on is the strip's as it saw the screen at its last step; the pages take it from their own shape instead (DockSide.h
+// MSBDHomeStripOnRight: the same rule), so a turn is laid out once and a new side alone places nothing again. The pages' hooks go in for it with
+// the Dock at the bottom too (DMDockSideHomeHook); the pages are placed again by SpringBoard's own pass when the room changes. Returns 1 when the
+// band is kept (the hook is in), 0 when it cannot be here. Main thread.
+__attribute__((visibility("default"))) int MSBDHomeStripRoom(double room, int right) {
+    (void)right;
+    if (!isfinite(room) || room < 0.0) room = 0.0;
+    if (fabs(room - gHomeStripRoom) < 0.25) return gDockSideHomeHooked && room > 0.0;
+    if (room > 0.0 && !gDMInCtor) DMDockSideHomeHook();
+    if (!gDockSideHomeHooked) { gHomeStripRoom = 0.0; return 0; }
+    gHomeStripRoom = room;
+    DMDockSideHomeRelayout(room > 0.0 ? @"the Recent Windows Strip's band" : @"the Recent Windows Strip's band went");
+    return room > 0.0;
+}
 static void DMDockSideChoose(void) {
     if (gDockPosition != MSBDDockBottom) {
         static BOOL installed = NO;
@@ -3615,15 +3657,7 @@ static void DMDockSideChoose(void) {
             Method hm1 = hm ? class_getInstanceMethod(hm, NSSelectorFromString(@"externalDockHeightForRootFolderController:")) : NULL, hm2 = hm ? class_getInstanceMethod(hm, NSSelectorFromString(@"maxExternalDockHeightForRootFolderController:")) : NULL;
             if (hm1 && hm2 && !strcmp(method_getTypeEncoding(hm1) ?: "", "d24@0:8@16") && !strcmp(method_getTypeEncoding(hm2) ?: "", "d24@0:8@16")) %init(DockSideHome);
             else DMLog(@"[dockside] the Home Screen's Dock height is not as expected here: its icons may move a little with the Dock at a side");
-            Class rv = objc_getClass("SBRootFolderView");
-            Method lf = rv ? class_getInstanceMethod(rv, NSSelectorFromString(@"_iconListFrameForPageRect:atIndex:")) : NULL;
-            if (lf && !strcmp(method_getTypeEncoding(lf) ?: "", "{CGRect={CGPoint=dd}{CGSize=dd}}56@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16Q48")) { %init(DockSideHomeLists); gDockSideHomeHooked = YES; }
-            else DMLog(@"[dockside] the Home Screen's page frames are not as expected here: its icons stay where they are with the Dock at a side");
-            Method lay = rv ? class_getInstanceMethod(rv, NSSelectorFromString(@"_layoutSubviews")) : NULL;
-            if (gDockSideHomeHooked && lay && !strcmp(method_getTypeEncoding(lay) ?: "", "v16@0:8")) %init(DockSideHomeButtons);
-            Method back = class_getInstanceMethod(objc_getClass("SBFloatingDockController"), NSSelectorFromString(@"floatingDockRootViewControllerDidEndPresentationTransition:"));
-            if (gDockSideHomeHooked && back && !strcmp(method_getTypeEncoding(back) ?: "", "v24@0:8@16")) %init(DockSideHomeBack);
-            else if (gDockSideHomeHooked) DMLog(@"[dockside] the Dock's presentation end is not as expected here: a size it takes while away waits for its next layout");
+            DMDockSideHomeHook();   // (the Home Screen's pages beside the Dock: shared with the Recent Windows Strip's band, installed once)
 #if DEBUG
             DMDockSideHomeCheckHook();
 #endif

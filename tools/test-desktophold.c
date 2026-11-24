@@ -1,6 +1,6 @@
 // test-desktophold.c -- Mac test of statusbar/DesktopHold.h (1.7.8): a finger held on the desktop -- when its menu opens (the 1.7.7 fix-round
 // review's m2: a finger wobbling in place got no menu), and whose a touch is, decided once (review N1: the Dock's swipe down and the desktop's
-// rectangle both acted on one finger). Run by test-desktophold.sh.
+// rectangle both acted on one finger); and which pointer presses are the desktop's from the touch-down (1.8.8.4). Run by test-desktophold.sh.
 #include <stdio.h>
 #include "../statusbar/DesktopHold.h"
 static int fails = 0, checks = 0;
@@ -38,6 +38,14 @@ int main(void) {
     Int("a pointer's press: the desktop's at once", MSBDDesktopTouchOursAnswer(&o, 0, 0, 1, 0.01, 0.35), 1);
     o = MSBDTouchUndecided;
     Int("dragging already, or the hold's menu open: the desktop's", MSBDDesktopTouchOursAnswer(&o, 1, 0, 0, 0.1, 0.35) && (o = MSBDTouchUndecided, MSBDDesktopTouchOursAnswer(&o, 0, 1, 0, 0.1, 0.35)), 1);
+    // ---- a pointer's press: the desktop's from the touch-down (1.8.8.4: a click held on one of our icons began the Home Screen's editing) ----
+    Int("a pointer's primary press on one of our icons: the desktop's at the touch-down (the Home Screen's click-and-hold never starts)", MSBDDesktopPointerPressOurs(1, 0, 0, 1), 1);
+    Int("  ... on page 1's empty desktop: the same (a held click opens our menu there, as a finger's hold does)", MSBDDesktopPointerPressOurs(1, 0, 0, 1), 1);
+    Int("  ... on a sticky note: the same (1.8.8.2)", MSBDDesktopPointerPressOurs(1, 0, 1, 1), 1);
+    Int("  ... a secondary click: not taken (the menu interaction opens our menu)", MSBDDesktopPointerPressOurs(1, 1, 0, 1) || MSBDDesktopPointerPressOurs(1, 1, 1, 1), 0);
+    Int("  ... a finger: not taken at the touch-down (its quick swipe turns the page; its hold's menu lets the others go)", MSBDDesktopPointerPressOurs(0, 0, 0, 1) || MSBDDesktopPointerPressOurs(0, 0, 1, 1), 0);
+    Int("  ... iPadOS's own menu for a held click (debug): an icon's or the desktop's press keeps its gestures", MSBDDesktopPointerPressOurs(1, 0, 0, 0), 0);
+    Int("  ... a note's still taken then (it has no iPadOS menu)", MSBDDesktopPointerPressOurs(1, 0, 1, 0), 1);
     printf("%s: %d/%d\n", fails ? "test-desktophold FAILED" : "test-desktophold: all pass", checks - fails, checks);
     return fails ? 1 : 0;
 }

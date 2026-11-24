@@ -586,7 +586,8 @@ static UIView *DMMSWSMCardPicture(UIView *card, CGRect *onScreen) {
     UIView *pic = [card snapshotViewAfterScreenUpdates:NO];
     UIView *bar = DMSMCardHasBar(card) ? objc_getAssociatedObject(card, kSMBarKey) : nil;
     if (bar) {   // (the window with its title bar: the card's picture alone was stretched over both in a drawn-again thumbnail)
-        CGRect br = [card convertRect:CGRectMake(0, -kSMBarH, card.bounds.size.width, kSMBarH) toCoordinateSpace:scr], u = CGRectUnion(r, br);
+        // (1.8.8.4: where the bar is drawn -- slid down with the menu bar over a window at the top edge, it is in the card's picture already: one bar)
+        CGRect br = [card convertRect:CGRectMake(0, -kSMBarH + DMAutoHideSMSlideDrawn(bar), card.bounds.size.width, kSMBarH) toCoordinateSpace:scr], u = CGRectUnion(r, br);
         UIView *both = [[UIView alloc] initWithFrame:CGRectMake(0, 0, u.size.width, u.size.height)];
         UIView *barPic = [bar snapshotViewAfterScreenUpdates:NO];
         if (barPic) { barPic.frame = CGRectOffset(br, -u.origin.x, -u.origin.y); [both addSubview:barPic]; }

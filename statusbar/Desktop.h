@@ -115,6 +115,8 @@ static BOOL gDesktopNotesOn = YES;    // (Settings > Desktop > Show Sticky Notes
 //  4 an app icon view to read them from, 8 the picture size from an icon view -- and where the folders' picture came from: 4 drawn, the folder
 //  icon of 1.4 (1-3 were the Files app's Home Screen icon, iOS's own Files icon, none, before it was drawn))
 static int gDesktopLookRead, gDesktopFolderFrom;
+static CGRect DMRStripHomeAreaBeside(CGRect area);   // (RecentStrip.h: the free area beside the Recent Windows Strip's band, 1.8.8.4)
+static BOOL DMRStripHomeBandOn(void);
 @interface DMDesktop : UIView <UIGestureRecognizerDelegate, UITextFieldDelegate, UIContextMenuInteractionDelegate, DMQuickLookBrowser>
 @property (nonatomic, copy) NSString *folder;
 - (instancetype)initWithFolder:(NSString *)folder;
@@ -174,7 +176,7 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (double)dm_noteHoldToMove;
 - (void)dm_noteBarFirstMove:(UITouch *)t;
 - (void)dm_noteHoldCueFor:(UITouch *)t;
-- (void)dm_notePointerPress:(UITouch *)t;
+- (void)dm_noteTakeTouch:(UITouch *)t;
 - (void)dm_noteTapDown:(UITouch *)t;
 - (void)dm_noteRenameEnd:(BOOL)keep refocus:(BOOL)refocus;
 - (void)dm_notePagesOff;
@@ -943,7 +945,10 @@ static void DMDesktopEditHomeScreen(void) {
 // The free area: the page minus the menu bar and the Dock (the native windows' desktop, which is the screen's: page 1 fills the screen).
 // (a desktop not on its page yet -- made while page 1 is not there, its bounds still zero -- has an empty free area at its middle, never CGRectNull:
 //  CGRectInset of a zero rect is CGRectNull, an infinite origin, and the sticky notes made then got frames that are not finite, 1.8.8.2)
-- (CGRect)dm_area {
+// (1.8.8.4: and beside the Recent Windows Strip's band while the Home Screen keeps it, RecentStrip.h: the files and notes are shown beside it; their
+//  saved places stay shares of the area without it, -dm_placesArea:, so nothing is rewritten and with the band gone they are back exactly)
+- (CGRect)dm_area { return DMRStripHomeAreaBeside([self dm_areaBeforeStrip]); }
+- (CGRect)dm_areaBeforeStrip {
     CGRect d = DMNativeDesktop(), b = self.bounds;
     CGRect a = CGRectIntersection(CGRectInset(d, 6.0, 4.0), b);
     if (!CGRectIsNull(a) && a.size.height >= 100.0) return a;
@@ -1226,6 +1231,7 @@ static void DMDesktopEditHomeScreen(void) {
 // A saved place is a share of this. With the Dock at a screen side (Settings > Dock > Position): the area as it would be with the Dock at the bottom, so the desktop's icons
 // stay where they are (KT 5 Nov), and one that would lie under the Dock goes to the nearest free spot (the placer keeps to -dm_area); back at the bottom it returns.
 - (CGRect)dm_placesArea:(CGRect)a {
+    if (DMRStripHomeBandOn()) a = [self dm_areaBeforeStrip];   // (the Recent Windows Strip's band: places are shares of the area without it, 1.8.8.4)
     CGSize scr = [UIScreen mainScreen].bounds.size;
     if (!DMDockSideNow(scr)) return a;
     static double (*atBottom)(void) = NULL;
@@ -1686,6 +1692,21 @@ static BOOL DMDesktopFingerOwnMenu(void) {
 #endif
     return kDMDesktopFingerOwnMenu;
 }
+// A pointer's primary press on one of our icons, a sticky note or page 1's empty desktop (DesktopHold.h MSBDDesktopPointerPressOurs, -dm_event:):
+// the desktop's from the touch-down, so the Dock's swipe down and Spotlight's pull are refused (-dm_touchIsOursFor:), and every other gesture on
+// it lets go now, the Home Screen's own click-and-hold among them, and once more on the next turn of the main queue (UIKit gives a touch its
+// gestures around SpringBoard's -sendEvent:: which comes first is UIKit's). Our own (dm.) gestures keep it: the click, the double click.
+- (void)dm_pointerPressTake:(UITouch *)t {
+    if (!t || t != _track || !_trackPointer || _trackSecondary) return;
+    _trackOwner = MSBDTouchDesktop;
+    [self dm_noteTakeTouch:t];
+    if ([self dm_noteTracked]) DM_FEATURE_MARK("sticky-note-pointer-press"); else DM_FEATURE_MARK("desktop-pointer-press");
+    __weak DMDesktop *ws = self; __weak UITouch *wt = t; CFTimeInterval at = _trackAt;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DMDesktop *s = ws; UITouch *x = wt;
+        if (s && x && s->_track == x && s->_trackAt == at && x.phase != UITouchPhaseEnded && x.phase != UITouchPhaseCancelled) [s dm_noteTakeTouch:x];
+    });
+}
 - (void)dm_holdCheck:(UITouch *)t since:(CFTimeInterval)at {
     if (!t || t != _track || _trackAt != at || _trackMode || _lifted || _band || _editing || _holdMenu || !self.userInteractionEnabled || !self.window) return;
     if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) return;
@@ -1891,7 +1912,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
             _trackSecondary = pointer && (DMDesktopButtons(e) & UIEventButtonMaskSecondary) != 0;
             _holdMenu = NO; _trackMoved = NO;
             if (onNote) [self dm_noteHoldCueFor:t];   // (1.8.8.2 B78: a finger held still on a note's paper: it lifts at 0.2 s, the cue that a move drags it)
-            if (onNote) [self dm_notePointerPress:t];   // (1.8.8.2: a pointer's primary press on a note is the note's from the touch down: no Home Screen editing)
+            if (MSBDDesktopPointerPressOurs(pointer, _trackSecondary, onNote, DMDesktopFingerOwnMenu())) [self dm_pointerPressTake:t];   // (a pointer's primary press: the desktop's from the touch down, no Home Screen editing: DesktopHold.h)
             if (DMDesktopFingerOwnMenu() && !_trackSecondary) {   // (a finger, or a click, held still: our menu, -dm_holdCheck:)
                 __weak DMDesktop *ws = self; __weak UITouch *wt = t; CFTimeInterval at = _trackAt;
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((pointer ? kDMDesktopHoldMenuPointer : kDMDesktopHoldMenu) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws dm_holdCheck:wt since:at]; });

@@ -1,6 +1,6 @@
 #!/bin/bash
-# test-postinst.sh: runs layout/DEBIAN/postinst on the Mac with a stand-in helper and launchctl (they only log what they were asked), /var/jb pointing
-# into a scratch folder, and checks which steps run.
+# test-postinst.sh: runs layout/DEBIAN/postinst on the Mac with a stand-in helper and launchctl (they only log what they were asked), every path it
+# names in a scratch folder (tools/scratch-root.sh), and checks which steps run.
 set -u
 cd "$(dirname "$0")/.."
 W=$(mktemp -d "${TMPDIR:-/tmp}/msbd-postinst.XXXXXX")
@@ -33,7 +33,8 @@ printf '#!/bin/sh\n[ "$1" = --compare-versions ] && exec python3 -I "%s" "$2" "$
 chmod +x "$R/usr/libexec/sshtoggled" "$R/usr/bin/launchctl" "$R/usr/bin/killall" "$R/usr/bin/dpkg"
 : > "$R/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist"
 : > "$R/Library/LaunchDaemons/com.besiktasliseba.chargelimit.plist"
-sed "s#/var/jb#$R#g" layout/DEBIAN/postinst > "$W/postinst"; chmod +x "$W/postinst"
+. tools/scratch-root.sh   # (every absolute path the script names under $W/root, checked: on an iPad's test lane /var/jb and /var/mobile are real)
+left=$(scratch_copy layout/DEBIAN/postinst "$W/root" "$W/postinst") || { echo "FAIL  the postinst copy still names real paths (never run): $left"; exit 1; }
 
 pass=0; fail=0
 run() {   # run <name> <is-ipad exit code> <expected: setup|nosetup> <postinst args...>

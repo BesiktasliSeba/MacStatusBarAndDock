@@ -1625,8 +1625,9 @@ static int DMSM17PassEnd(DMSM17Pass *pass, CGRect area) {
         if (e == [NSNull null]) continue;
         NSArray *en = e;
         CGPoint p = [en[1] CGPointValue], now, keep = p; CGSize z = [en[2] CGSizeValue];
-        // (a window the user let go past an edge, at that place: kept where the callback keeps it, its top under the area's top)
-        BOOL past = ![en[3] boolValue] && pass->kept && pass->container.width > 0 && pass->container.height > 0 && p.y - z.height / 2.0 >= CGRectGetMinY(area) - 0.5 && pass->kept(p, z, pass->container, &keep) && isfinite(keep.x) && isfinite(keep.y);
+        // (a window the user let go past an edge, at that place: kept where the callback keeps it, its top under the area's top -- the kept top: one
+        //  recorded at the top edge while the menu bar hid itself is kept under the bar again, past its edge still, 1.8.8.4)
+        BOOL past = ![en[3] boolValue] && pass->kept && pass->container.width > 0 && pass->container.height > 0 && pass->kept(p, z, pass->container, &keep) && isfinite(keep.x) && isfinite(keep.y) && keep.y - z.height / 2.0 >= CGRectGetMinY(area) - 0.5;
         if (past) pass->keptPast++;
         CGPoint want = [en[3] boolValue] ? p : past ? keep : DMSMClampCenter(p, z, area);   // (full screen: the container's centre, not clamped into the stage area)
         if (!DMSMItemPosition(en[0], &now) || (fabs(now.x - want.x) < 0.5 && fabs(now.y - want.y) < 0.5)) continue;

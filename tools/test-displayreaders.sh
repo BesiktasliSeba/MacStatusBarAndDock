@@ -182,10 +182,12 @@ c_menu_size() {   # <StatusBar.x>: a menu at the size of the bar it hangs from: 
 c_wifi_room() {   # <WiFiMenu.h>: the Wi-Fi menu's room under the bar on the screen the menu is on, at its bar's size
   grep -qF 'CGFloat room = DMMenuScreenHeight() - (MSBDMenuBarFixedSite(DMMenuSize(), DMMenuBarHeightHere()) + 16.0)' "$1" && ! grep -q 'gDMBarSize' "$1"
 }
-c_stage_top() {   # <StatusBar.x>: Stage Manager's stage area of a TV's pass starts under the TV's own bar (R6)
+c_stage_top() {   # <StatusBar.x>: Stage Manager's stage area of a TV's pass starts under the TV's own bar (R6; 1.8.8.4: the rule in BarAutoHide.h MSBDBarAHPassTop)
   fn 'static CGRect DMSMOurStageArea(CGRect r, CGRect b, double dock, BOOL strip, BOOL dh) {' "$1" | grep -qF 'r = DMSMStageTopByDisplay(r, b);' \
-    && fn 'static CGRect DMSMStageTopByDisplay(CGRect r, CGRect b) {' "$1" > "$W/st" && grep -qF 'MAX(gSMStatusBarOrigH, DMTVBarHeight())' "$W/st" \
-    && awk '/if \(DMTVBarSizeNow\(\) == gDMBarSize\) return r;/{a=NR} /CGFloat top = /{b=NR} END{exit !(a && b > a)}' "$W/st"
+    && fn 'static CGRect DMSMStageTopByDisplay(CGRect r, CGRect b) {' "$1" > "$W/st" \
+    && grep -qF 'MSBDBarAHPassTop(was, gSMStatusBarOrigH, bar, gSMStatusBarTitle, DMAutoHideLayout(), gSMStatusBarLowered, tv, DMTVBarSizeNow() == gDMBarSize, DMTVBarHeight());' "$W/st" \
+    && grep -qF 'BOOL tv = s != [UIScreen mainScreen];' "$W/st" \
+    && grep -qF 'return tvSameSize ? MSBDBarAHSMStageTop(iosH, barH, titleH, 0) : fmax(iosH, tvBarH) + titleH;' ../common/BarAutoHide.h
 }
 check "Menu Bar Size: a TV's provider and a TV's bar copy by the TV's own size, the iPad's by the iPad's; the TV's bar height by its size" "c_bar_provider $S"
 check "  ... the TV's size taken at its connect from its own override (msb menuBarSize; the iPad's in force until changed) and held until it goes" "c_bar_tvsize $S"
@@ -298,7 +300,7 @@ check "made to fail: the TV's manager's question answered at the iPad's size (th
 check "made to fail: the bar over a full-screen app on a TV laid out at the iPad's size" "mutant tvfsbar $S '    BOOL tv = gDMBarHooksIn && DMExternalScreenOf(v) != nil;' '    BOOL tv = NO;' c_tv_window"
 check "made to fail: every manager's question taken as the TV's (the iPad's own included)" "mutant tvaskall $S '    return s && main && s != main;' '    return s && main;' c_tv_window"
 check "made to fail: a TV's stage top left at the iPad's bar" "mutant stagetop $S 'r = DMSMStageTopByDisplay(r, b);' 'r = r;' c_stage_top"
-check "made to fail: a TV's stage top moved with the TV at the iPad's own size (the Home-button iPads' 4 pt)" "mutant stagetopsame $S '    if (DMTVBarSizeNow() == gDMBarSize) return r;' '    if (0) return r;' c_stage_top"
+check "made to fail: a TV's stage top moved with the TV at the iPad's own size (the Home-button iPads' 4 pt)" "mutant stagetopsame $S 'gSMStatusBarLowered, tv, DMTVBarSizeNow() == gDMBarSize, DMTVBarHeight());' 'gSMStatusBarLowered, tv, NO, DMTVBarHeight());' c_stage_top"
 check "made to fail: the ask not counted around iOS's answer in one of the two (left as the iPad's)" "mutant tvaskone $S '- (double)defaultStatusBarHeightInOrientation:(long long)o {
     if (!DMBarSizeManagerOnOtherDisplay(self)) return %orig;
     double h = 0;

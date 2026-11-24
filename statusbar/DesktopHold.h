@@ -37,3 +37,16 @@ static inline int MSBDDesktopTouchOursAnswer(MSBDTouchOwner *owner, int dragging
 }
 // The swipe down fired for this touch: the desktop lets it go -- unless it was the desktop's already (then the Dock never fires: it asked first).
 static inline void MSBDDesktopTouchGiveAway(MSBDTouchOwner *owner) { if (*owner == MSBDTouchUndecided) *owner = MSBDTouchGivenAway; }
+
+// ---- 3. a pointer's press: the desktop's from the touch-down (1.8.8.4) ----
+// A pointer's primary press on what the desktop follows -- one of our icons, a sticky note, page 1's empty desktop -- only selects, opens (a
+// double click), drags, draws the selection rectangle or, held still 0.75 s, opens our menu (Desktop.h -dm_holdCheck:): never a page swipe, never
+// one of the Home Screen's own gestures. So its other gestures let go at the touch-down. Before, they kept the touch until our menu's time and the
+// Home Screen's own click-and-hold began its editing (jiggle mode) first: 0.7 s into a held click on iPadOS 16, sooner on 18 (1.8.8.2 took a
+// note's press so; our icons and the empty desktop now as well). A secondary click keeps them (the menu interaction opens our menu); a finger is
+// not taken here (its quick swipe turns the page; its hold's menu at 0.45 s lets them go). ownMenu: a held click opens our menu (Desktop.h
+// DMDesktopFingerOwnMenu; a debug build can give an icon's and the empty desktop's back to iPadOS's menu, which needs the press's gestures; a
+// note has no such menu).
+static inline int MSBDDesktopPointerPressOurs(int pointer, int secondary, int onNote, int ownMenu) {
+    return pointer && !secondary && (onNote || ownMenu);
+}

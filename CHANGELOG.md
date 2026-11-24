@@ -2,6 +2,18 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.8.4
+
+### Improvements
+- Recent Windows Strip: minimized windows now fly into it and wait there, as with Stage Manager on a Mac. Tap or click one to swap it with the window in front, or drag windows in and out of it. The Home Screen keeps room for it, so it no longer covers icons. It's off by default: to use it on iPadOS 15 with Aerial, Zetsu or MilkyWay4, turn it on in Settings > Windows & Multitasking > Recent Windows Strip.
+- Mac Switcher: swiping a window up to quit it now flies it away smoothly and keeps the Mac Switcher open, instead of jumping to the Home Screen (iPadOS 16 to 18 with the Stage Manager engine, and full-screen apps with Aerial).
+- With Aerial 5 on iPadOS 15 and 18, apps you open into a window now take less memory and graphics work to draw (up to about 45 MB less), with the same look.
+
+### Fixes
+- With the Stage Manager engine and Automatically Hide and Show the Status Bar on, windows now reach the top of the screen, and their title bars slide down with the menu bar when it appears and back up when it hides, as with the other engines.
+- Holding a click on one of your desktop files or folders, or on the empty desktop, now opens its menu instead of starting Home Screen editing.
+- With Aerial, a window you locked with Aerial's Lock no longer snaps to a screen edge when you let go of it near one.
+
 ## 1.8.8.3
 
 ### New

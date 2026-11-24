@@ -16,6 +16,9 @@ static BOOL Same(CGRect a, CGRect b) { return fabs(a.origin.x - b.origin.x) < 1e
 // this area. CGRectInset of a zero rect is CGRectNull, so the area was CGRectNull, and every note made then got a frame that is not finite.
 static CGRect gNativeDesktop;
 static CGRect DMNativeDesktop(void) { return gNativeDesktop; }
+// (1.8.8.4: -dm_area is the area beside the Recent Windows Strip's band, RecentStrip.h; with no band, as here, the area itself: the band's own
+//  geometry is test-recentstrip's. sg-area.inc then holds -dm_area and the area it is made from, -dm_areaBeforeStrip)
+static CGRect DMRStripHomeAreaBeside(CGRect area) { return area; }
 @interface SGDesk : NSObject
 @property (nonatomic) CGRect bounds;
 - (CGRect)dm_area;

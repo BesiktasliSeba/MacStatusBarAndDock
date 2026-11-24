@@ -27,9 +27,11 @@ has() { grep -qF "$2" "$1"; }
     echo 'static void DMStageSetLayoutNote(UIView *st, id saved) { (void)st; (void)saved; }   // (not in this source)'
   fi
   # the window state's entry for one window, as DMSaveWindowState makes it (its lines from the layout noted to the entry added)
+  echo 'static NSDictionary *DMRStripSavedEntry(UIView *st) { (void)st; return nil; }   // (the Recent Windows Strip, 1.8.8.4: switched off here, as by default)'
   echo 'static NSDictionary *DMTestSavedEntry(UIView *st, NSString *b, CGRect f, BOOL minimized) {'
   echo '    NSMutableArray *wins = [NSMutableArray array];'
-  fn "$S" 'static void DMSaveWindowState(void) {' | grep -F -e 'NSString *lay = DMStageLayoutNote(st);' -e '[wins addObject:'
+  fn "$S" 'static void DMSaveWindowState(void) {' | grep -F -e 'NSString *lay = DMStageLayoutNote(st);' -e '[wins addObject:' \
+    -e 'NSDictionary *one = ' -e 'NSDictionary *strip = ' -e 'if (strip.count) {'   # (1.8.8.4: the entry made first, the strip's order merged in)
   echo '    return wins.lastObject;'
   echo '}'
   # what the restore does with the saved entry where it places the window (DMRestoreStep's lines that name the entry's layout)

@@ -97,9 +97,11 @@ static NSMutableDictionary<NSString *, NSNumber *> *gMSWWinDesk, *gMSWQuitting;
 static NSMutableDictionary<NSString *, NSString *> *gMSWWinFrame, *gMSWFullScreen;
 static NSMutableDictionary<NSString *, UIView *> *gMSWWinShots;
 static NSMutableDictionary<NSString *, NSDictionary *> *gMSWFit;
+static NSMutableSet<NSString *> *gMSWQuitHere;   // (1.8.8.4: the apps quit from the open view -- MacSwitcherButton.h's Home tick keeps the view for them)
 static int gFQLayOuts, gFQSaves;
 static BOOL MSBReduceMotion(void) { return NO; }
 static void DMMSWLayOutTiles(void) { gFQLayOuts++; }
+static void DMMSWAfter(double seconds, dispatch_block_t b) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), b); }   // (1.8.8.4: the quit after the flight)
 static void DMMSWKeptForget(NSString *b) { [gFQKeptForget addObject:b ?: @"(nil)"]; }
 static NSDictionary *DMMSWFitWithout(NSDictionary *fit, NSString *b) { return nil; }
 static void DMMSWSave(void) { gFQSaves++; }
@@ -125,7 +127,7 @@ static void reset(BOOL sm, BOOL perWindow, DMEngine engine) {
     gMSWTiles = [NSMutableArray array];
     gMSWWinDesk = [NSMutableDictionary dictionary]; gMSWQuitting = nil; gMSWWinFrame = [NSMutableDictionary dictionary];
     gMSWFullScreen = [NSMutableDictionary dictionary]; gMSWWinShots = [NSMutableDictionary dictionary]; gMSWFit = [NSMutableDictionary dictionary];
-    gAppQuitAt = nil; gFQLayOuts = gFQSaves = 0;
+    gAppQuitAt = nil; gFQLayOuts = gFQSaves = 0; gMSWQuitHere = nil;
 }
 static DMMSWTile *tile(DMMSWKind kind, NSString *key, CGFloat x) {
     DMMSWTile *t = [[DMMSWTile alloc] initWithFrame:CGRectMake(x, 300, 300, 220)];
@@ -161,7 +163,9 @@ int main(void) { @autoreleasepool {
     gMSWWinDesk[kSafA] = @1; gMSWWinDesk[kSafB] = @1; gMSWWinDesk[kNotesW] = @1; gMSWWinDesk[kSafC] = @2;
     gMSWWinFrame[kSafC] = @"{{100, 120}, {700, 600}}";
     DMMSWFlickQuit(a, @"a flick (test)");
-    runFor(1.8);
+    runFor(0.2);
+    BOOL flying = gFQClosed.count == 0 && gFQTerminated.count == 0 && gFQPrewarm.count == 0;   // (1.8.8.4: the quit after the flight)
+    runFor(1.6);
     printf("-- Stage Manager engine, Safari with two windows here and one on Desktop 2: its front window flicked up\n");
     ok([gFQTerminated isEqualToArray:@[@"com.apple.mobilesafari (reason 1)"]],
        [NSString stringWithFormat:@"the app ends: the one terminate request names com.apple.mobilesafari, as the App Switcher's swipe-up (got: %@)", J(gFQTerminated)]);
@@ -177,6 +181,9 @@ int main(void) { @autoreleasepool {
        [NSString stringWithFormat:@"SpringBoard's switcher clean-up is asked for the app, at once and 0.6 s later (got: %@)", J(gFQDeleted)]);
     ok([gFQLog containsObject:@"[macswitcher] swipe up to quit: com.apple.mobilesafari (a flick (test)), its 1 other window(s) in the view too"],
        @"the log names the app and its other window in the view");
+    ok(flying, @"while the thumbnail flies (0.2 s in) nothing of the app is closed or ended yet: the quit comes after the flight (1.8.8.4)");
+    ok(gMSWQuitHere.count == 1 && [gMSWQuitHere containsObject:kSafari],
+       [NSString stringWithFormat:@"the app, not its window's key, is marked as quit from the view (its Home keeps the view open, 1.8.8.4; marked: %@)", J(gMSWQuitHere.allObjects)]);
 
     // 2. Any other caller handing Force Quit a window's key (none does today; Force Quit takes it as the window's app from now on)
     reset(YES, YES, DMEngineNone);
@@ -197,7 +204,7 @@ int main(void) { @autoreleasepool {
     tile(DMMSWKindStage, kNotes, 40); DMMSWTile *s3 = tile(DMMSWKindStage, kSafari, 380);
     gMSWWinDesk[kSafari] = @1; gMSWWinDesk[kNotes] = @1;
     DMMSWFlickQuit(s3, @"a flick (test)");
-    runFor(1.3);
+    runFor(1.6);   // (1.8.8.4: the quit 0.28 s later, after the flight -- the clean-up's second ask with it)
     printf("-- unchanged: Stage Manager engine with windows by app, Safari flicked up\n");
     ok([gFQTerminated isEqualToArray:@[@"com.apple.mobilesafari (reason 1)"]] && [gFQClosed isEqualToArray:@[kSafA]] && [tilesLeft() isEqualToArray:@[kNotes]]
        && gMSWWinDesk.count == 1 && gMSWWinDesk[kNotes] && [gFQPrewarm isEqualToArray:@[kSafari]],

@@ -117,6 +117,8 @@ static CGRect gMSWArea;                            // where the window thumbnail
 static CGFloat gMSWStripH = 0, gMSWTitleH = 26.0;
 static const CGFloat kMSWStripGap = kMSBDMSWStripGap, kMSWStripLabelH = kMSBDMSWStripLabelH;   // the strip: between two desktops' tiles; a desktop's name, kMSBDMSWStripLabelTop under its tile (MSWFlick.h)
 static CFTimeInterval gMSWOwnHomeAt = 0;           // (the Mac Switcher asked for the Home Screen itself while its view stays open: MacSwitcherButton.h)
+static NSMutableSet<NSString *> *gMSWQuitHere;     // (the apps quit from the open view by Swipe Up to Quit, until it closes -- DMMSWTeardown, or DMMSWCloseUnderSlide
+                                                   //  under a desktop switch --: the Home Screen their end brings is the view's own, MacSwitcherButton.h DMMSWHomeTick)
 // ---- a window dragged onto another desktop (the drag section, after the view's taps) ----
 static const NSInteger kMSWDropNew = -1, kMSWDropNone = -2;   // (a drop target: a desktop's place, "+" -- a new desktop --, or nothing)
 @class DMMSWTile;
@@ -1909,6 +1911,8 @@ static void DMMSWCloseUnderSlide(void) {
     gMSWPortals = nil; gMSWTiles = nil; gMSWHilite = nil; gMSWRoot = nil;
     gMSWStrip = nil; gMSWStripPortals = nil; gMSWDeskClips = nil; gMSWDeskLabels = nil; gMSWPlusView = nil;
     gMSWOpen = NO; gMSWClosing = NO; gMSWTurnAt = 0;
+    [gMSWQuitHere removeAllObjects];   // (the apps quit from this view: their marks end with it, as in DMMSWTeardown -- kept, the next view over such an
+                                       //  app stayed at a Home by the gesture or that app quitting by itself; 1.8.8.4 review)
     for (UIGestureRecognizer *g in [vr.gestureRecognizers copy]) [vr removeGestureRecognizer:g];
     DMMSWFocus(NO);
     DMMenuKeyboardOrder();
@@ -3312,6 +3316,7 @@ static void DMMSWTeardown(void) {
     DMMSWOpenShotDrop();   // (closed without a switch: the picture goes)
     if (!gMSWSlRoot) gMSWWindow.hidden = YES;
     gMSWOpen = NO; gMSWClosing = NO; gMSWTurnAt = 0;
+    [gMSWQuitHere removeAllObjects];
     DMMSWFocus(NO);
     DMMenuKeyboardOrder();   // (a windowed app's keyboard goes back to its level)
     DMLog([NSString stringWithFormat:@"[macswitcher] closed: %lu portals let go%@", (unsigned long)n, DMMSWIsMain() ? @"" : [NSString stringWithFormat:@" (%@)", DMMSWM().key]]);
@@ -4312,7 +4317,18 @@ static void DMMSWDragEnd(CGPoint p, BOOL cancelled) {
 // App Switcher ends it, its desktop records, Fit arrangement and kept file go (DMMSWForgetApp), and every window of the app goes with it. Our own
 // windows (Finder, Activity Monitor: native) are no app of their own to quit: never by a flick.
 __attribute__((noinline)) static BOOL DMMSWFlickable(DMMSWTile *t) { return gMSWSwipeQuit && t && t.kind != DMMSWKindNative && t.bundle.length > 0; }
-// The thumbnail flies off the top from where it is now; the app's other thumbnails in the view fade; the others close up; then the quit.
+// The thumbnail flies off the top from where it is now; the app's other thumbnails in the view fade; the others close up; then the quit. The view
+// stays open, on every engine and iPadOS (1.8.8.4, KT 24 Nov, iPadOS 18.5: "when the window is swiped up i abruptly end up on the home screen,
+// without actually understanding whether the app quit or not ... doesn't match the [iPadOS 15.6.1] behavior"):
+//  - the flight and the close-up go to the render server at once, and the quit comes once the thumbnail has flown: with the Stage Manager
+//    engine the quit first closes the app's windows with Stage Manager's own Close, which held SpringBoard's main thread 70 to 85 ms, and this
+//    turn's animations waited for it (bursts on iPadOS 18.5: the thumbnail stood still 0.1 to 0.2 s where the finger let go, then flew; on 15.6.1,
+//    Aerial's close holds nothing); and the thumbnail's portal is live, so what iPadOS then does with the window -- taken away, its close in its
+//    place -- showed in the flying thumbnail (a full-screen app's went blank for a frame mid-flight). The app's end is under the open view;
+//  - the app is one the view quit (gMSWQuitHere): when it was the app in front -- with the Stage Manager engine a desktop's front window's app
+//    (16, 17, 18), with any engine a full-screen app's thumbnail -- the Home Screen its end brings is the view's own and does not close the view
+//    (MacSwitcherButton.h DMMSWHomeTick). It closed it at once, without its fade, and iPadOS's own close of the window into its Dock icon showed,
+//    then the Home Screen; Aerial's windows (iPadOS 15.6.1) are never the app in front, so its view always stayed.
 __attribute__((noinline)) static void DMMSWFlickQuit(DMMSWTile *t, NSString *how) {
     if (!t || !gMSWRoot) return;
     // (its app: a Stage Manager thumbnail names its window by its key, "<bundle>|<scene>" (MacSwitcherSM.h), and that key quit no app -- only the
@@ -4324,7 +4340,8 @@ __attribute__((noinline)) static void DMMSWFlickQuit(DMMSWTile *t, NSString *how
     CGRect at = [t.inner convertRect:t.inner.bounds toView:gMSWRoot];
     CGFloat up = CGRectGetMaxY(at) + 60.0;
     UIView *label = t.label;
-    [UIView animateWithDuration:MSBReduceMotion() ? 0.15 : 0.28 delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:^{
+    double flight = MSBReduceMotion() ? 0.15 : 0.28;
+    [UIView animateWithDuration:flight delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:^{
         if (!MSBReduceMotion()) t.transform = CGAffineTransformTranslate(t.transform, 0, -up);
         t.alpha = 0; label.alpha = 0;
         for (DMMSWTile *o in others) { o.alpha = 0; o.label.alpha = 0; }
@@ -4335,7 +4352,26 @@ __attribute__((noinline)) static void DMMSWFlickQuit(DMMSWTile *t, NSString *how
     DMMSWLayOutTiles();
     DM_FEATURE_MARK("mac-switcher-swipe-up-quit");
     DMLog([NSString stringWithFormat:@"[macswitcher] swipe up to quit: %@ (%@)%@", b, how, others.count ? [NSString stringWithFormat:@", its %lu other window(s) in the view too", (unsigned long)others.count] : @""]);
-    DMForceQuitBundle(b);
+#if DEBUG
+    if (DMTestFlag("/tmp/msw-quitold")) {   // (test: as before 1.8.8.4 -- the quit at once, the flight waiting for its work; its Home closes the view)
+        CFTimeInterval q0 = CACurrentMediaTime();
+        DMForceQuitBundle(b);
+        DMLog([NSString stringWithFormat:@"[macswitcher] swipe up to quit (msw-quitold): the quit at once, %.0f ms of the main thread before the flight", (CACurrentMediaTime() - q0) * 1000.0]);
+        return;
+    }
+#endif
+    [CATransaction flush];   // (the flight and the close-up to the render server now)
+    if (!gMSWQuitHere) gMSWQuitHere = [NSMutableSet set];
+    [gMSWQuitHere addObject:b];
+    DMMSWAfter(flight, ^{   // (the quit once the thumbnail has flown, whatever the view does meanwhile)
+#if DEBUG
+        CFTimeInterval q0 = CACurrentMediaTime();
+#endif
+        DMForceQuitBundle(b);
+#if DEBUG
+        DMLog([NSString stringWithFormat:@"[macswitcher] swipe up to quit: %@ quit after the flight, %.0f ms of the main thread", b, (CACurrentMediaTime() - q0) * 1000.0]);
+#endif
+    });
 }
 // A flick let go at p is on a desktop or on "+" in the strip (a drag let go there moves): each desktop's drop target (MSWFlick.h MSBDMSWDropOnDesk:
 // its tile, 6 pt round it, its name) and "+"'s tile the same way. Nothing wider: the drop's own "+" target runs on to the screen's right edge, and so

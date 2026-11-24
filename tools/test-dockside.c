@@ -184,6 +184,49 @@ int main(void) {
     Frame("  ... just room for 6 pt each side: still moved, not laid out again", MSBDDockSideHomeListFrame(ipad2Page, MSBDDockLeft, 54.5, 33.25, 33.25), CGRectMake(27.25, 0, 1024, 768));
     Frame("the bottom: the frame as iPadOS gives it", MSBDDockSideHomeListFrame(m1Page, MSBDDockBottom, 52.1, 56.5, 982.5), m1Page);
     Frame("  ... no room known yet: as iPadOS gives it", MSBDDockSideHomeListFrame(m1Page, MSBDDockLeft, 0, 56.5, 982.5), m1Page);
+    // ---- the same with the Recent Windows Strip's band (1.8.8.4): room on both sides, the strip's room 0 is the Dock's own answer exactly ----
+    {
+        int same = 1, n = 0;
+        CGRect pages[] = { m1Page, m1Page2, ipad2Page, CGRectMake(0, 0, 834, 1194), CGRectNull, CGRectZero };
+        double rooms[] = { 0, 52.1, 54.5, 70.1, -3, NAN }, frees[][2] = { { 56.5, 982.5 }, { 139.7, 157.0 }, { 124, 124 }, { 10, 10 }, { 33.25, 33.25 }, { 0, 0 }, { -5, 20 } };
+        for (int p = 0; p < 6; p++) for (int s = 0; s < 4; s++) for (int r = 0; r < 6; r++) for (int f = 0; f < 7; f++) for (int sr = 0; sr < 2; sr++) for (int z = 0; z < 3; z++) {
+            double stripRoom = z == 0 ? 0.0 : (z == 1 ? -1.0 : NAN);
+            CGRect a = MSBDDockSideHomeListFrame(pages[p], s, rooms[r], frees[f][0], frees[f][1]), b = MSBDHomeListFrameTwoSided(pages[p], s, rooms[r], sr, stripRoom, frees[f][0], frees[f][1]);
+            if (memcmp(&a, &b, sizeof a)) same = 0;
+            n++;
+        }
+        checks++; if (same) printf("PASS  no strip room (0, negative, not a number): the side Dock's own answer byte for byte, over %d pages, sides, rooms and layouts\n", n);
+        else { fails++; printf("FAIL  no strip room: the answer differs from the side Dock's own\n"); }
+    }
+    Frame("the strip at the left, the Dock at the bottom: iPadOS's grid moves over by half the band (97 pt on a 1024 x 768 pt screen)", MSBDHomeListFrameTwoSided(ipad2Page, MSBDDockBottom, 0, false, 97, 124, 124), CGRectMake(48.5, 0, 1024, 768));
+    Num("  ... its first column clear of the band (from x 172.5, the band to 97)", 48.5 + 124, 172.5);
+    Frame("  ... the strip at the right (the Dock at the left): the grid shares the Dock's room and the band's", MSBDHomeListFrameTwoSided(ipad2Page, MSBDDockLeft, 54.5, true, 97, 124, 124), CGRectMake(54.5 - 124 * 151.5 / 248.0, 0, 1024, 768));
+    Num("  ... its icons start past the Dock with the free share left (54.5 + 124 x 96.5 / 248)", 54.5 - 124 * 151.5 / 248.0 + 124, 54.5 + 124 * (1 - 151.5 / 248.0));
+    Num("  ... and end before the band with the same share", 1024 - 97 - (54.5 - 124 * 151.5 / 248.0 + 1024 - 124), 124 * (1 - 151.5 / 248.0));
+    CGRect atria = MSBDHomeListFrameTwoSided(m1Page, MSBDDockBottom, 0, false, 103, 56.5, 982.5);
+    Num("iPadOS 15.6.1, Atria's two columns along the left, the strip at the left (103 pt): the columns move just past the band", CGRectGetMinX(atria) + 56.5, 103 + 56.5 * (1 - 103 / 1039.0));
+    Num("  ... same width (nothing laid out again)", atria.size.width, 1194);
+    Frame("a full-width layout (free 10 + 10) with the strip at the left: the list is the room beside the band", MSBDHomeListFrameTwoSided(ipad2Page, MSBDDockBottom, 0, false, 97, 10, 10), CGRectMake(97, 0, 927, 768));
+    Frame("  ... with a Dock at the right as well: the room between them", MSBDHomeListFrameTwoSided(ipad2Page, MSBDDockRight, 54.5, false, 97, 10, 10), CGRectMake(97, 0, 1024 - 97 - 54.5, 768));
+    Frame("  ... a Dock at the left and the strip at the right", MSBDHomeListFrameTwoSided(ipad2Page, MSBDDockLeft, 54.5, true, 97, 10, 10), CGRectMake(54.5, 0, 1024 - 97 - 54.5, 768));
+    Frame("portrait (the Dock at the bottom there), the strip at the left", MSBDHomeListFrameTwoSided(CGRectMake(0, 0, 768, 1024), MSBDDockBottom, 54.5, false, 97, 80, 80), CGRectMake(97 - 80 * 97 / 160.0, 0, 768, 1024));
+    Int("the band's check: an icon at x 56.5 with the strip 97 pt in at the left is in it", MSBDHomeUnderStrip(CGRectMake(56.5, 62.5, 60, 60), 1024, false, 97), 1);
+    Int("  ... one from x 97 is clear", MSBDHomeUnderStrip(CGRectMake(97, 62.5, 60, 60), 1024, false, 97), 0);
+    Int("  ... at the right: one ending at 930 is in a band from 927", MSBDHomeUnderStrip(CGRectMake(870, 62.5, 60, 60), 1024, true, 97), 1);
+    Int("  ... no strip: never", MSBDHomeUnderStrip(CGRectMake(0, 0, 60, 60), 1024, false, 0), 0);
+    // (review of 1.8.8.4: the band's side from the page's own shape, the strip's own rule: a turn is laid out once)
+    Int("the band's side on a page: the Dock at Left in landscape, the right edge", MSBDHomeStripOnRight(MSBDDockLeft, 1194, 834), 1);
+    Int("  ... the Dock at Left in portrait (the Dock stands at the bottom there): the left edge", MSBDHomeStripOnRight(MSBDDockLeft, 834, 1194), 0);
+    Int("  ... the Dock at Right or at the bottom, either shape: the left edge", MSBDHomeStripOnRight(MSBDDockRight, 1194, 834) + MSBDHomeStripOnRight(MSBDDockRight, 834, 1194)
+        + MSBDHomeStripOnRight(MSBDDockBottom, 1194, 834) + MSBDHomeStripOnRight(MSBDDockBottom, 834, 1194), 0);
+    {
+        int same = 1;
+        for (int p = 0; p < 3; p++) for (int s = 0; s < 2; s++) {
+            double w = s ? 1024 : 768, h = s ? 768 : 1024;
+            if (MSBDHomeStripOnRight(p, w, h) != (MSBDDockSideFor(p, w, h) == MSBDDockLeft)) same = 0;
+        }
+        Int("  ... the same as the strip's (MSBDRStripOnRight of the Dock at Left on that shape) for every position and shape", same, 1);
+    }
     double fl = 0, fr = 0;
     MSBDDockSideHomeFree(56.5, 982.5, false, &fl, &fr); Num("the free space: the insets as they are, left to right", fl * 10000 + fr, 56.5 * 10000 + 982.5);
     MSBDDockSideHomeFree(56.5, 982.5, true, &fl, &fr); Num("  ... right to left, the layout mirrored: swapped", fl * 10000 + fr, 982.5 * 10000 + 56.5);

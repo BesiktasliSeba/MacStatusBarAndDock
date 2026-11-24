@@ -68,7 +68,9 @@ static long CryptidOffset(NSData *d) {
 int main(void) {
     @autoreleasepool {
         FM = [NSFileManager defaultManager];
-        char tmpl[] = "/tmp/test-finderipa.XXXXXX";
+        // (in TMPDIR, the test's own: on an iPad's test lane /tmp is the iPad's own)
+        NSString *tmplS = [NSTemporaryDirectory() ?: @"/tmp" stringByAppendingPathComponent:@"test-finderipa.XXXXXX"];
+        char tmpl[1024]; strlcpy(tmpl, tmplS.fileSystemRepresentation, sizeof tmpl);
         if (!mkdtemp(tmpl)) { printf("FAIL: no temp folder\n"); return 1; }
         Root = [NSString stringWithUTF8String:tmpl];
 

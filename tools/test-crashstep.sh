@@ -88,7 +88,7 @@ run l104 step1b-dock.ips step1b-dock.ips
 [ $r = 10 ] && [ "$(defaults read com.besiktasliseba.macstatusbaranddock crashGuardAction 2>/dev/null)" = 1 ] && echo "PASS  under step 1's note the Dock is still not loaded (the skip list kept)" || { echo "FAIL  the Dock under step 1's note ($r)"; fails=1; }
 if python3 -I crashstep-pagescut.py "$GD/LineSwitch.h" "$PM" "$W/pages-cut.h" "$W/picker-cut.h"; then
   for v in tested untested; do
-    o=-O0; a=; [ $v = untested ] && o=-DDEBUG=1 && a=untested
+    o=-O0; a=; [ $v = untested ] && o="-DDEBUG=1 -DMSBD_GATE_FAKE_STATE=\"com.besiktasliseba.test-crashstep.fakeversion.$$\"" && a=untested   # (a state of this run's own: notifyd's are the system's)
     clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation $o -iquote ../common -DMSBD_TEST_EXPLAIN_H="\"$GD/CrashExplain.h\"" \
       -DMSBD_TEST_LINESWITCH_CUT="\"$W/pages-cut.h\"" -DMSBD_TEST_PICKER_CUT="\"$W/picker-cut.h\"" -DMSBD_GUARD_RECORD="\"$W/record.txt\"" \
       -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" -o "$W/tsp-$v" test-crashsteppages.m && "$W/tsp-$v" $a || fails=1

@@ -29,6 +29,8 @@ static void DMSnapMoveEnded(UIView *st) { gKSnaps++; }
 static void DMBehindDockMoveEnded(UIView *st) { (void)st; }   // (a move cut short: behind the Dock or not, 1.8.7.5 -- test-engineturnbehind.sh)
 static void DMRememberStageFrame(UIView *stage) { gKRemembered++; }
 static void DMSaveWindowState(void) { gKSaved++; }
+static BOOL DMRStripWindowDrag(UIView *win, UIGestureRecognizer *g, UIGestureRecognizerState state) { return NO; }   // (the Recent Windows Strip, 1.8.8.4: switched off here, as by default)
+#define DM_FEATURE_MARK(name) do { } while (0)
 
 // ---- an Aerial window (AerialStage): Aerial's own -handlePan: / -handleResizeBR: record the states they are called with
 @interface KStage : UIView
@@ -42,6 +44,7 @@ static UIView *DMStageForBundle(NSString *bundleID) { return nil; }   // (1.8.8 
 
 #include "asf-real.inc"   // (kStageBarHeight, gFitGroup, gFitSlots, DMFitGroupForget, DMTitleRecordHandEnded, then DMAerialPanBefore ... DMAerialGestureAfter)
 static void DMAerialPanFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL after) { (void)stage; (void)g; (void)after; }   // (1.8.8.3: the drag past the screen's edges, test-aerialpastedge.sh)
+static BOOL DMAerialStageLocked(UIView *stage) { (void)stage; return NO; }   // (Aerial's Lock: a locked window's drag is none by hand, test-aerialpastedge.sh)
 
 static void (*o5_pan)(id, SEL, id), (*o5_resizeBR)(id, SEL, id);
 static void KO5Pan(id self, SEL _cmd, id g) { [(KStage *)self k_origPan:g]; }

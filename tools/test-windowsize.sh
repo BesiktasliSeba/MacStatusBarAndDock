@@ -15,11 +15,12 @@ fails=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
 S=../statusbar/StatusBar.x; P=../statusbar/macstatusbarprefs/MSBRootListController.m; PL=../statusbar/macstatusbarprefs/Resources/Windows.plist; R=../common/OwnPageRows.h; C=crashmap-rules.txt
 fn() { awk -v head="$1" 'index($0, head) == 1 {f=1} f {print} f && /^}/ {exit}' $S > "$W/fn"; }   # (one function of StatusBar.x, from its first line to its closing brace)
-check "the one new window: Default is the middle place as before, Small / Large the rule's in the iPad's desktop under the menu bar -- also while it hides itself, as Stage Manager's desktop -- (its middle place's top, the smallest window)" \
+check "the one new window: Default is the middle place as before, Small / Large the rule's in the iPad's desktop under the menu bar -- also while it hides itself, as Stage Manager's new window (1.8.8.4: DMSMNewWindowDesk) -- (its middle place's top, the smallest window)" \
   "fn 'static CGRect DMNewWindowFrameWindowAt(int choice) {' && grep -q 'if (choice == MSBDWindowSizeDefault) return DMLayoutFrameWindow(@\"center\");' \$W/fn \
    && grep -q 'CGRect u = DMUsableArea(); CGFloat bar = DMMenuBarHeight();' \$W/fn && grep -q 'if (CGRectGetMinY(u) < bar) u = CGRectMake(u.origin.x, bar, u.size.width, MAX(100.0, CGRectGetMaxY(u) - bar));' \$W/fn \
    && grep -q 'return MSBDWindowSizeFrameIn(choice, u, scr, DMCenterTopFor(scr), MSBDWindowMinSize());' \$W/fn \
-   && awk '/^static CGRect DMSMUsableAreaForIdentity\(id identity, CGSize \*screenOut\) \{/,/^}/' $S | grep -q 'if (CGRectGetMinY(u) < bar) u = CGRectMake(u.origin.x, bar, u.size.width, MAX(100.0, CGRectGetMaxY(u) - bar));' \
+   && awk '/^static CGRect DMSMNewWindowDesk\(CGRect u, CGSize scr\) \{/,/^}/' $S | grep -q 'return CGRectGetMinY(u) < bar ? CGRectMake(u.origin.x, bar, u.size.width, MAX(100.0, CGRectGetMaxY(u) - bar)) : u;' \
+   && grep -qF 'if (choice != MSBDWindowSizeDefault) u = DMSMNewWindowDesk(u, scr);' $S \
    && grep -q 'static CGRect DMNewWindowFrame(void) { return DMA5StageFromWindow(DMNewWindowFrameWindowAt(gWindowSizeChoice)); }' $S"
 check "  ... read with the other preferences (never set or anything but small / large: Default), from the stored value as Settings reads it" \
   "grep -q 'CFPropertyListRef ws = CFPreferencesCopyValue(CFSTR(kMSBDWindowSizeKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);' $S \

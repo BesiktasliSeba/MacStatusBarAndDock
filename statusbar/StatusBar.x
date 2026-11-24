@@ -918,6 +918,7 @@ static BOOL DMSnapOff(void);
 static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how);
 static void DMSnapMoveEnded(UIView *st);
 static void DMBehindDockMoveEnded(UIView *st);   // (a window the user left behind the Dock, Aerial / Zetsu / MilkyWay4: 1.8.7.5, with snapping)
+static BOOL DMRStripWindowDrag(UIView *win, UIGestureRecognizer *g, UIGestureRecognizerState state);   // (RecentStrip.h: a window drag over the Recent Windows Strip; YES: the drop went into it)
 #include "A5FitPass.h"   // (Aerial 5.x's fit-to-screen pass as it shows from outside: 1.7.2 -- plain C, tools/test-a5fitpass.sh)
 #include "A5WakeFollow.h"   // (the steps after Aerial 5's round-icon minimize, each when Aerial's animation has run out: 1.7.4 -- plain C, tools/test-a5wake.sh)
 #include "LightMagnify.h"   // (Magnify Traffic Lights: a finger on the lights grows them into a pill to pick from, 1.8.6 -- the rule plain C, tools/test-lightmagnify.sh)
@@ -2422,6 +2423,9 @@ static UIView *DMStageForBundle(NSString *bundleID);
 static void DMRememberStageFrame(UIView *stage);
 static void DMEnforceStageFrame(UIView *stage, NSString *why);
 static void DMA5SyncHostMaskBy(UIView *stage, const char *by);   // (Aerial 5's corner mask set from the app holder now: defined with DMA5SyncHostMask)
+#if DEBUG
+static void DMA5CornersInfo(void);   // (trigger a5corners: defined with DMA5SyncHostMask)
+#endif
 
 // Bug (reported): opening an app from the App Library as a window left the App Library up over everything; a windowed launch never goes through
 // SpringBoard's own path. So whenever a launch ends in a window (a new one, or an existing one shown again), the App Library is dismissed here,
@@ -3503,10 +3507,14 @@ static CGRect DMDockTargetFor(NSString *bundle, NSString **what) {   // (screen 
     if (dock) { if (what) *what = @"the Dock's middle"; CGRect d = [dock convertRect:dock.bounds toCoordinateSpace:space]; return CGRectMake(CGRectGetMidX(d) - 34.0, CGRectGetMidY(d) - 34.0, 68.0, 68.0); }
     return CGRectNull;
 }
+static CGRect DMRStripFlightRect(UIView *window, BOOL *faded);   // (RecentStrip.h: the Recent Windows Strip's slot a window flies into, or its card it comes out of)
 static CGAffineTransform DMMinimizedTransform(UIView *window) {   // (a window by its centre over its Dock place, scaled to fit it; or the fade's scale)
+    // (the Recent Windows Strip first, 1.8.8.4: a minimize flies into the slot the window takes, a way back grows out of its card -- also with Reduce
+    //  Motion, which fades: the strip lays its cards out for the change. CGRectNull: the strip is off or cannot show, the Dock icon as before)
+    CGRect strip = DMRStripFlightRect(window, NULL);
     if (MSBReduceMotion()) return CGAffineTransformMakeScale(kMSBRMScale, kMSBRMScale);
     NSString *what = nil;
-    CGRect target = DMDockTargetFor(DMStageBundle(window), &what);
+    CGRect target = CGRectIsNull(strip) ? DMDockTargetFor(DMStageBundle(window), &what) : strip;
     BOOL inScreen = window.window != nil || [window isKindOfClass:[UIWindow class]];
     if (CGRectIsNull(target) || !inScreen || window.bounds.size.width < 1.0 || window.bounds.size.height < 1.0) return CGAffineTransformMakeScale(0.94, 0.94);
     CGAffineTransform keep = window.transform;
@@ -3520,10 +3528,13 @@ static CGAffineTransform DMMinimizedTransform(UIView *window) {   // (a window b
 }
 static BOOL DMMinimizeFlies(CGAffineTransform away) { return !MSBReduceMotion() && (fabs(away.tx) > 1.0 || fabs(away.ty) > 1.0); }
 // Into the Dock (0.36 s, the picture fading over the last 40 %, as the Stage Manager engine's) or, without a Dock / with Reduce Motion, the fade.
+// (The Recent Windows Strip's burst, Minimize All and Home: each window's flight 30 ms after the one before, RecentStrip.h DMRStripFlightDelay.)
+static double DMRStripFlightDelay(UIView *window);
 static void DMMinimizeAnimate(UIView *window, CGAffineTransform away, void (^done)(BOOL)) {
+    double delay = DMRStripFlightDelay(window);
     if (DMMinimizeFlies(away)) {
         DM_FEATURE_MARK("minimize-to-dock");
-        [UIView animateKeyframesWithDuration:0.36 delay:0 options:UIViewKeyframeAnimationOptionCalculationModeCubic | UIViewKeyframeAnimationOptionBeginFromCurrentState animations:^{
+        [UIView animateKeyframesWithDuration:0.36 delay:delay options:UIViewKeyframeAnimationOptionCalculationModeCubic | UIViewKeyframeAnimationOptionBeginFromCurrentState animations:^{
             [UIView addKeyframeWithRelativeStartTime:0.0 relativeDuration:1.0 animations:^{ window.transform = away; }];
             [UIView addKeyframeWithRelativeStartTime:0.6 relativeDuration:0.4 animations:^{ window.alpha = 0.0; }];
         } completion:done];
@@ -3546,7 +3557,8 @@ static void DMRestoreAnimate(UIView *window) {
     }
     MSBAnimate(0.26, 0, 0.95, 0, ^{ window.transform = CGAffineTransformIdentity; window.alpha = 1.0; }, nil);
 }
-static void DMRStripWillMinimize(UIView *stage);   // (RecentStrip.h: the recent windows strip's picture of a window before it is minimized, 1.8.8.2 F29)
+static void DMRStripWillMinimize(UIView *stage);   // (RecentStrip.h: the Recent Windows Strip's entry and picture of a window before it is minimized)
+static void DMRStripLanded(UIView *window);   // (RecentStrip.h: its flight landed, its card shows)
 static void DMMinimizeWindow(UIView *window) {
     if (DMWindowMinimized(window)) return;
     if (DMWaitForContextMenu([NSString stringWithFormat:@"minimize %p", window], ^{ DMMinimizeWindow(window); })) return;
@@ -3559,6 +3571,7 @@ static void DMMinimizeWindow(UIView *window) {
         window.transform = CGAffineTransformIdentity;
         window.alpha = 1.0;
         DMApplyWindowLevel();
+        DMRStripLanded(window);
     });
 }
 // The same for an Aerial stage. Aerial's own minimize turns the stage into a round app-icon chip that stays on screen; instead the stage
@@ -3576,6 +3589,7 @@ static void DMMinimizeStage(UIView *stage) {
         stage.transform = CGAffineTransformIdentity;
         stage.alpha = 1.0;
         DMApplyWindowLevel();
+        DMRStripLanded(stage);
     });
 }
 static BOOL DMA5ShowWaits(UIView *stage);   // (Aerial 5 still has it minimized: shown once its own restore is over -- with the round-icon catch)
@@ -4504,6 +4518,7 @@ static const void *kZetsuBarPanKey = &kZetsuBarPanKey, *kZetsuBarStartKey = &kZe
         objc_setAssociatedObject(w, kZetsuBarStartKey, @[[NSValue valueWithCGRect:f0], [NSValue valueWithCGPoint:p0]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(w, kStageGestureKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         DMZetsuRaise(w);
+        DMRStripWindowDrag(w, g, g.state);   // (the Recent Windows Strip, 1.8.8.4: a drag begins)
         return;
     }
     NSArray *start = objc_getAssociatedObject(w, kZetsuBarStartKey);
@@ -4512,9 +4527,13 @@ static const void *kZetsuBarPanKey = &kZetsuBarPanKey, *kZetsuBarStartKey = &kZe
     CGRect f = CGRectOffset(f0, p.x - p0.x, p.y - p0.y);
     f.origin.y = MAX(DMTopLimit(), f.origin.y);   // the title bar never goes above the screen's top edge, nor under the status bar while it shows (24 pt; 0 while it hides itself)
     [UIView performWithoutAnimation:^{ w.frame = f; }];
+    // (the Recent Windows Strip, 1.8.8.4: over its cards it steps aside at once, at its edge it opens a slot; let go there, the window goes in -- its
+    //  snap, Behind the Dock, the title bar's record and its place left alone: it comes back where it was before the drag)
+    BOOL toStrip = DMRStripWindowDrag(w, g, g.state);
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled || g.state == UIGestureRecognizerStateFailed) {
         objc_setAssociatedObject(w, kStageGestureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(w, kZetsuBarStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (toStrip) { DMZetsuFixScale(w); return; }
         if (g.state == UIGestureRecognizerStateEnded) DMSnapMoveEnded(w);   // (1.7.3 item 3: let go, it lines up with what is near)
         else DMTitleRecordHandEnded(w, g.state);   // (a move by hand cut short: moved all the same, review 1.8.3 L2)
         if (g.state == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(w);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
@@ -8598,8 +8617,8 @@ static CGRect DMNewWindowFrameWindowAt(int choice) {
     if (choice == MSBDWindowSizeDefault) return DMLayoutFrameWindow(@"center");
     DM_FEATURE_MARK("window-size-open");
     CGSize scr = [UIScreen mainScreen].bounds.size;
-    // (in the desktop under the menu bar also while the auto-hiding bar is hidden -- DMUsableArea's top is 0 then --, as Stage Manager's desktop is
-    //  (DMSMUsableAreaForIdentity): the same window on every engine)
+    // (in the desktop under the menu bar also while the auto-hiding bar is hidden -- DMUsableArea's top is 0 then --, as Stage Manager's new window
+    //  is (DMSMNewWindowDesk): the same window on every engine)
     CGRect u = DMUsableArea(); CGFloat bar = DMMenuBarHeight();
     if (CGRectGetMinY(u) < bar) u = CGRectMake(u.origin.x, bar, u.size.width, MAX(100.0, CGRectGetMaxY(u) - bar));
     if (choice == kMSBDOpenIPhone) { DM_FEATURE_MARK("app-window-size-iphone"); return MSBDWindowPhoneIn(u, kMSBDWindowBarHeight, MSBDWindowMinSize()); }
@@ -9208,6 +9227,9 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
         if (!CGRectEqualToRect(f, win.frame)) win.frame = f;
     }
     if (g.state != UIGestureRecognizerStateChanged && g.state != UIGestureRecognizerStateBegan) objc_setAssociatedObject(g, &kMWOffsetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // (the Recent Windows Strip, 1.8.8.4: over its cards it steps aside at once, at its edge it opens a slot; let go there, the window goes in -- its
+    //  snap, Behind the Dock, the title bar's record and MilkyWay's kept place left alone: it comes back where it was before the drag)
+    if (DMRStripWindowDrag(win, g, g.state)) return;
     if (g.state == UIGestureRecognizerStateEnded) DMSnapMoveEnded(win);   // (1.7.3 item 3: let go, it lines up with what is near)
     else DMTitleRecordHandEnded(win, g.state);   // (a move by hand cut short: moved all the same, review 1.8.3 L2)
     if (g.state == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(win);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
@@ -12201,6 +12223,10 @@ static void DMAttachOutsideTaps(void) {   // the Home Screen and the Dock: every
         if (!([cn isEqualToString:@"SBHomeScreenWindow"] || [cn isEqualToString:@"SBFloatingDockWindow"]) || objc_getAssociatedObject(w, kOutsideTapKey)) continue;
         UILongPressGestureRecognizer *g = [[UILongPressGestureRecognizer alloc] initWithTarget:handler action:@selector(tapped:)];
         g.minimumPressDuration = 0.0; g.allowableMovement = CGFLOAT_MAX; g.cancelsTouchesInView = NO; g.delaysTouchesBegan = NO; g.delaysTouchesEnded = NO; g.delegate = handler;
+        // (ours, in the desktop's "dm." names: the desktop lets every other gesture on a press go once the press is its own -- a pointer's press
+        //  on page 1 at its touch-down, 1.8.8.4 B89 -- and this one, there before it ever saw the touch, then never told the windowed apps to put
+        //  their keyboard away: it takes nothing from anyone, so it keeps every touch)
+        g.name = @"dm.focus.outside";
         [w addGestureRecognizer:g];
         objc_setAssociatedObject(w, kOutsideTapKey, g, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         DMLog([NSString stringWithFormat:@"[focus] watching touches outside the windows in %@", cn]);
@@ -12636,6 +12662,7 @@ static dispatch_queue_t DMWindowStateWriter(void) {
     dispatch_once(&once, ^{ writer = dispatch_queue_create("MSBWindowStateWriter", DISPATCH_QUEUE_SERIAL); });
     return writer;
 }
+static NSDictionary *DMRStripSavedEntry(UIView *st);   // (RecentStrip.h: a minimized window's Recent Windows Strip entry, its time and why: nil with the strip off)
 static void DMSaveWindowState(void) {
     if (!gWindowSaveOn || gRestoringWindows || DMActiveEngine() == DMEngineNone || !DMWindowSaveNeeded()) return;   // (every desktop's windows: DMWindowSaveNeeded)
     // Nothing is saved while the iPad is locked or its screen is off: Aerial 5.0 turns every window into its round 56 pt icon for the lock (we
@@ -12674,7 +12701,10 @@ static void DMSaveWindowState(void) {
             f = old;
         }
         NSString *lay = DMStageLayoutNote(st);   // (the layout it is in, 1.8.2.1: back with it after a respring, one on another desktop or minimized too)
-        [wins addObject:lay ? @{@"bundle": b, @"frame": NSStringFromCGRect(f), @"minimized": @(minimized), @"layout": lay} : @{@"bundle": b, @"frame": NSStringFromCGRect(f), @"minimized": @(minimized)}];
+        NSDictionary *one = lay ? @{@"bundle": b, @"frame": NSStringFromCGRect(f), @"minimized": @(minimized), @"layout": lay} : @{@"bundle": b, @"frame": NSStringFromCGRect(f), @"minimized": @(minimized)};
+        NSDictionary *strip = minimized ? DMRStripSavedEntry(st) : nil;   // (the Recent Windows Strip's order, kept across a respring: stripAt, stripWhy)
+        if (strip.count) { NSMutableDictionary *m = [one mutableCopy]; [m addEntriesFromDictionary:strip]; one = [m copy]; }
+        [wins addObject:one];
     }
     NSMutableDictionary *saving = [@{@"windows": wins, @"screen": NSStringFromCGSize([UIScreen mainScreen].bounds.size),
                                      @"fitGroup": gFitGroup ? [gFitGroup copy] : @[], @"fitSlots": gFitSlots ? [gFitSlots copy] : @{}} mutableCopy];
@@ -12875,6 +12905,7 @@ static CGRect DMSavedFrameForThisEngine(CGRect f, NSDictionary *state, NSString 
     }
     return g;
 }
+static void DMRStripRestoreEntry(UIView *st, NSDictionary *saved);   // (RecentStrip.h: a respring's restore gives a minimized window its strip entry back)
 static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int waited) {
     if (i >= wins.count) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMFinishRestore(state); }); return; }
     NSDictionary *w = wins[i];
@@ -12997,6 +13028,7 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
             if (fromWindowFrame && !minimizedAgain) DMA5NoteProvisionalPlace(stage, place);
             // (MilkyWay4's own minimized state is DMMinimizeWindow's: DMMinimizeStage's mark left the window hidden yet "not minimized" for
             //  DMStageMinimized, so the next save wrote it as an open window and the respring after that brought it back shown, M1 7 Oct)
+            if (minimizedAgain) DMRStripRestoreEntry(stage, w);   // (the Recent Windows Strip: its time and why as saved, taken by the minimize below)
             if (minimizedAgain) { Class mwc = objc_getClass("AXWindowView"); if (mwc && [stage isKindOfClass:mwc]) DMMinimizeWindow(stage); else DMMinimizeStage(stage); }
             DMStageSetLayoutNote(stage, w[@"layout"]);   // (the layout it was in, 1.8.2.1: one away or minimized is not noted again until it is shown)
             [gRestoreHidden removeObject:bundle];
@@ -13727,6 +13759,12 @@ static void DMAerialHandStart(UIView *stage, UIGestureRecognizer *g) {
     objc_setAssociatedObject(stage, kStageGestureKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(g, kAerialHandStartKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
+static BOOL DMAerialStageLocked(UIView *stage);   // (Aerial's Lock Stage, read by name: with Aerial 5's drag below)
+static void DMAerialLockedNote(UIView *stage) {   // (a title-bar drag on a window in Aerial's Lock: the line the device rows read, and the marker)
+    DM_FEATURE_MARK("aerial-lock-stays");
+    static int logged = 0;
+    if (logged++ < 20) DMLog([NSString stringWithFormat:@"[aerial] %@ is in Aerial's Lock: the drag moves nothing, no snap, its place kept", DMStageBundle(stage)]);
+}
 static BOOL DMAerialPanBefore(UIView *stage, UIPanGestureRecognizer *g) {
     UIGestureRecognizerState s = g.state;
     // A window is moved by its title bar only. Aerial's window drag recogniser also starts from a finger dragging inside the app (scrolling a page moved the
@@ -13744,6 +13782,9 @@ static BOOL DMAerialPanBefore(UIView *stage, UIPanGestureRecognizer *g) {
             static int logged = 0; if (logged++ < 6) DMLog([NSString stringWithFormat:@"[aerial] a drag that started inside the window (y %.0f, scroll %d) does not move it", start.y, byScroll]);
             return NO;
         }
+        // (a window in Aerial's own Lock: Aerial's step moves nothing, so this drag is no move by hand: no follow, no snap at its end, its tile,
+        //  its place and the title bar's way back kept, as for a drag refused above -- DMAerialGestureAfter finds no mark. 1.8.8.4)
+        if (DMAerialStageLocked(stage)) { DMAerialLockedNote(stage); return YES; }
         DMAerialHandStart(stage, g);
     }
     return YES;
@@ -13751,9 +13792,13 @@ static BOOL DMAerialPanBefore(UIView *stage, UIPanGestureRecognizer *g) {
 // After a drag (pan) or a resize by hand: remember the place it ends up in. Only the end of one taken at its start (DMAerialHandStart).
 static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizer *g, BOOL wasPan) {
     UIGestureRecognizerState s = g.state;
+    // (the Recent Windows Strip, 1.8.8.4: a drag taken at its start, over its cards it steps aside at once, at its edge it opens a slot; let go there,
+    //  the window goes in -- its snap, Behind the Dock, the title bar's record and its place left alone: it comes back where it was before the drag)
+    BOOL toStrip = wasPan && [objc_getAssociatedObject(g, kAerialHandStartKey) boolValue] && DMRStripWindowDrag(stage, g, s);
     if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled || s == UIGestureRecognizerStateFailed) {
         if (![objc_getAssociatedObject(g, kAerialHandStartKey) boolValue]) return;   // (a drag refused at its start: not moved by hand, M5)
         objc_setAssociatedObject(stage, kStageGestureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (toStrip) return;
         DMTitleRecordHandEnded(stage, s);   // (a move or a resize by hand: the title bar's frame from before is older, P4-1; also one cut short, L2)
         if (wasPan && s == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(stage);   // (a move cut short: left behind the Dock or not, as one let go -- 1.8.7.5)
         if (wasPan && s == UIGestureRecognizerStateEnded) {   // (1.7.3 item 3: let go, it lines up with what is near -- the desktop's edges, the windows around)
@@ -16776,6 +16821,7 @@ static BOOL DMCCPanelEscape(NSSet<UIPress *> *presses);   // (CCPanel.h: Esc in 
 static BOOL DMCC18PanelEscape(NSSet<UIPress *> *presses);   // (CC18Shape.h: the same on iPadOS 18)
 static BOOL DMDispPanelEscape(NSSet<UIPress *> *presses);   // (DisplaySettings.h: Esc on the TV's Display Settings panel, 1.8.7)
 static void DMDispPanelClose(NSString *why);   // (DisplaySettings.h: the TV's Display Settings panel closed, 1.8.7)
+static BOOL DMRStripKeys(NSSet<UIPress *> *presses);   // (RecentStrip.h: Up, Down, Return, Escape while Window > Show Recent Windows brought the strip out, 1.8.8.4)
 static void DMOverlayPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, UIPressesEvent *event) {
     // (the Dock's Downloads panel holds the keys while it is open, dock/Downloads.m -holdKeys:: its Esc is here too, not only in the native
     //  windows' hook, which is there only while Finder is on)
@@ -16787,6 +16833,7 @@ static void DMOverlayPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, 
     if (!gOverlay && DMDispPanelEscape(presses)) return;
     if (!gOverlay && DMCCPanelEscape(presses)) return;
     if (!gOverlay && DMCC18PanelEscape(presses)) return;
+    if (!gOverlay && DMRStripKeys(presses)) return;
     o_OverlayPressesBegan(self, _cmd, presses, event);
 }
 static void DMInstallOverlayEsc(void) {
@@ -19616,6 +19663,10 @@ static void DMOpenNativeWindowMenu(UIButton *btn) {
         [items addObject:[NSNull null]];
     }
     [items addObject:R(@"Bring All to Front", nil, ^{ for (DMNativeWindow *x in [gNativeWindows copy]) if (!x.hidden) [x.superview bringSubviewToFront:x]; [w activate]; })];
+    // (the Recent Windows Strip, 1.8.8.4: the same rows as the engines' Window menu -- Move to Strip, this window into it, as its Minimize with the
+    //  switch on; Show Recent Windows, the strip stepped aside brought out over the windows)
+    if (w && DMRStripOn()) [items addObject:R(@"Move to Strip", nil, ^{ [w minimize]; })];
+    if (DMRStripMenuOffered()) [items addObject:[[DMRow alloc] initWithTitle:@"Show Recent Windows" enabled:YES handler:DMCloseThen(^{ DMRStripMenuReveal(); })]];
     [items addObject:[NSNull null]];
     for (DMNativeWindow *x in [gNativeWindows copy]) {
         DMRow *r = [[DMRow alloc] initWithTitle:x.title ?: @"Finder" enabled:YES handler:DMCloseThen(^{ [x show]; })];
@@ -20438,8 +20489,12 @@ static void DMMinimizeAllWindows(void) {
         }
         return;
     }
+    // (the Recent Windows Strip, 1.8.8.4: every window these loops take gets its slot first, so each flies into its place in the final list, 30 ms
+    //  apart -- RecentStrip.h; nil with the strip off)
+    NSArray<UIView *> *burst = DMRStripBurstBegin();
     if (DMActiveEngine() == DMEngineZetsu) {   // Zetsu as the engine: each window fades away like an Aerial stage (not Zetsu's own title-bar pill)
         for (UIView *w in [DMAerialStages() copy]) if (!w.hidden && !DMStageMinimized(w)) DMMinimizeStage(w);
+        DMRStripBurstEnd(burst);
         return;
     }
     if (DMActiveEngine() == DMEngineAerial) {
@@ -20453,6 +20508,7 @@ static void DMMinimizeAllWindows(void) {
             if (viewClass && [v isKindOfClass:viewClass] && !v.hidden && !DMWindowMinimized(v)) DMMinimizeWindow(v);
         }
     }
+    DMRStripBurstEnd(burst);
     // Zetsu parity: independent of which of the two engines above is active (Zetsu can have windows open alongside/instead of either),
     // so this runs regardless, not as another `else if`. -MinibtnEvent is a real, existing ZetsuAppController method (confirmed via
     // methsearch on a live instance) -- the same one its own minimize button already calls; this fires it directly the way DMForceQuitBundle
@@ -20680,7 +20736,9 @@ static void DMOpenWindowMenu(UIButton *btn) {
         if (aboutActive && DMVisibleWindowCount() > 0) [items addObject:[[DMRow alloc] initWithTitle:@"Bring All to Front" enabled:YES handler:DMCloseThen(^{ DMBringAllToFrontNow(); })]];
         if ((gWindowsBehindApps || gFullScreenRaised) && gWindowsPinnedForward && DMVisibleWindowCount() > 0)
             [items addObject:[[DMRow alloc] initWithTitle:@"Send All to Back" enabled:YES handler:DMCloseThen(^{ DMToggleWindowsForward(); })]];
-        // (the recent windows strip, stepped aside under a window: out over the windows, as the pointer at the edge brings it, 1.8.8.2 F29)
+        // (the Recent Windows Strip, 1.8.8.4: Move to Strip, the window in front into it, as Command-M with the switch on; stepped aside under a window,
+        //  Show Recent Windows brings it out over the windows, as the pointer at the edge does, 1.8.8.2 F29)
+        if (aboutActive && DMRStripMoveOffered()) [items addObject:[[DMRow alloc] initWithTitle:@"Move to Strip" enabled:YES handler:DMCloseThen(^{ DMMinimizeActiveApp(); })]];
         if (DMRStripMenuOffered()) [items addObject:[[DMRow alloc] initWithTitle:@"Show Recent Windows" enabled:YES handler:DMCloseThen(^{ DMRStripMenuReveal(); })]];
     } else if (DMSMEngine()) {   // (the same rows as with our other engines)
         DMRow *openRow = [[DMRow alloc] initWithTitle:@"Open Apps as Windows" enabled:YES handler:DMCloseThen(^{
@@ -23966,6 +24024,7 @@ static void DMLoadPrefs(void) {
         BOOL recentStrip = (rs && CFGetTypeID(rs) == CFBooleanGetTypeID() && CFBooleanGetValue(rs));
         if (rs) CFRelease(rs);
         if (recentStrip != gRStripPref) DMLog([NSString stringWithFormat:@"[recentstrip] Recent Windows Strip %@", recentStrip ? @"on" : @"off"]);
+        if (gRStripPref && !recentStrip) DMRStripSwitchedOff();   // (1.8.8.4: the windows a swap or a drag put there come back; minimized ones stay)
         gRStripPref = recentStrip;
     }
     {   // Recent Apps with Left-Edge Swipe (Stage Manager engine, 1.8.4.2): off unless switched on (DMSMStripRevealBegin)
@@ -30351,6 +30410,7 @@ static void DMRunTrigger(NSString *cmd) {
         UIView *stage = DMTopStage();
         if (stage) DMStageLightAction(stage, [[cmd substringFromIndex:7] integerValue]); else DMLog(@"[aerial] no stage for the light");
     }
+    else if ([cmd isEqualToString:@"a5corners"]) DMA5CornersInfo();   // a5corners: each Aerial 5 window's app corners -- the clip on its app's picture or our mask, and where the fill is (read-only)
     else if ([cmd isEqualToString:@"astages"]) {   // Aerial stages, back to front
         DMLog([NSString stringWithFormat:@"[aerial] AerialCore %d, window %@", objc_getClass("AerialCore") != nil, DMAerialWindow() ? NSStringFromCGRect(DMAerialWindow().frame) : @"none"]);
         for (UIView *s in DMAerialStages()) {
@@ -34962,6 +35022,8 @@ static void DMA5FitPicture(UIView *stage) {
 #endif
 }
 static BOOL DMAerial5GestureLive(UIView *stage);   // (defined with the drag watch below)
+static BOOL DMA5HolderClipped(UIView *in);   // (the app's corners: defined with DMA5SyncHostMask)
+static void DMA5RoundBottom(CALayer *l);
 static void DMA5PictureFade(UIView *stage, NSString *why) {   // the held picture cross-fades into the app
     UIView *box = objc_getAssociatedObject(stage, kA5PicCoverKey);
     if (!objc_getAssociatedObject(stage, kA5PicSizeKey)) [gA5PicStages removeObject:stage];
@@ -35060,6 +35122,7 @@ static void DMA5PictureEnd(UIView *stage) {
         DMA5HeldPicture *box = [[DMA5HeldPicture alloc] initWithFrame:in.bounds];
         box.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         box.userInteractionEnabled = NO; box.clipsToBounds = YES; box.accessibilityIdentifier = @"MSBResizePicture";
+        if (DMA5HolderClipped(in)) DMA5RoundBottom(box.layer);   // (the app's corners, as its picture under it has them, when the holder has no mask: DMA5SyncHostMask)
         box.pictureSize = in.bounds.size; box.keepsRightEdge = [objc_getAssociatedObject(stage, kA5PicLeftKey) boolValue];
         held.layer.anchorPoint = CGPointZero;
         held.frame = box.bounds;
@@ -35759,9 +35822,10 @@ static void DMAerial5Theme(UIView *stage) {
     CALayer *L = stage.layer;
     if (!minimized && L.shadowOpacity != 0.0f) L.shadowOpacity = 0.0f;
     // 3b. the app's corners: square at the top (right under the title bar), the window's 12 pt at the bottom. Aerial rounds its holder by 30 pt
-    //     on every layout pass; its own radius is disarmed (no corners masked) and a mask of ours does the rounding (see DMA5SyncHostMask).
+    //     on every layout pass; its own radius is disarmed (no corners masked) and the app's picture inside rounds itself (see DMA5SyncHostMask).
     if (in0 && !minimized && in0.layer.maskedCorners != 0) in0.layer.maskedCorners = 0;
-    // 4. no white: the app's holder and any big plain view waiting for the app take the base colour
+    // 4. no white: the app's holder and any big plain view waiting for the app take the base colour (the holder hands its colour to the app's
+    //    picture once that is in: DMA5ClipHosts)
     UIView *inner = DMStageInnerView(stage);
     for (UIView *v in stage.subviews) {
         if (v == chrome || [v.accessibilityIdentifier hasPrefix:@"MSB"] || ![NSStringFromClass([v class]) isEqualToString:@"UIView"] || v.hidden) continue;
@@ -35866,7 +35930,7 @@ static BOOL DMA5DragAllowedAt(UIView *stage, CGPoint p) {   // p in the stage's 
 // A title-bar drag moves the window exactly as far as the finger (1.7.5 item 10): the window goes to where it was when the finger went down plus how
 // far the finger has moved since, on every move, not Aerial's own deltas from wherever it left the window. Aerial moves by deltas from the drag's
 // start, some 10-13 pt after the finger went down (its recogniser's threshold), so the window used to fall that far behind (+200 -> +206 on x at the
-// side of the screen: M1 15.6.1 and the 17.5, Aerial 5.1). The start point comes from the guard (every touch in the window is offered to it first);
+// side of the screen: iPadOS 15.6.1 and 17.5, Aerial 5.1). The start point comes from the guard (every touch in the window is offered to it first);
 // on Aerial 3.0 from our -handlePan: hook, before Aerial's step (DMAerialPanFollow).
 // 1.8.8.3 (GitHub #19; KT 24 Nov): on BOTH axes, with nothing held but the top, as Zetsu's, MilkyWay4's and our Stage Manager engine's
 // windows go: left, right and down as far as the finger or the pointer takes it (the point they hold stays on the screen), the title bar never above
@@ -35889,6 +35953,20 @@ static BOOL DMAerialStageLocked(UIView *stage) {
         if (!t || (t[0] != 'B' && t[0] != 'c')) iv = NULL;
     }
     return iv && *((uint8_t *)(__bridge void *)stage + ivar_getOffset(iv)) != 0;
+}
+// A drag of a window in Aerial's own Lock (1.8.8.4): Aerial's step moves nothing (it returns at once while _lockMode is on: 3.0's -handlePan:), and
+// neither does anything of ours: no follow, no title bar kept under the menu bar, and at its end no snap (1.7.3's 45 pt snap still moved a locked
+// window let go near an edge onto it), no title-bar record, no behind-the-Dock mark, no place kept: the window stays exactly where it is, as Aerial's
+// Lock means. Its resize handles are Aerial's own, hidden while locked. YES: locked, the drag left alone (its start points dropped).
+static BOOL DMAerialLockedDrag(UIView *stage, UIGestureRecognizer *g) {
+    if (!stage || !DMAerialStageLocked(stage)) return NO;
+    UIGestureRecognizerState s = g.state;
+    if (s != UIGestureRecognizerStateBegan && s != UIGestureRecognizerStateChanged) {
+        objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(stage, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (s == UIGestureRecognizerStateEnded) DMAerialLockedNote(stage);
+    }
+    return YES;
 }
 // Aerial's Trim mode: its step offsets the trim's baseline frame (_trimBaselineFrame, while _trimMode is on and it is not empty) by the move it made;
 // the rest of our move goes onto it too, so the trim's end puts the window back where it is.
@@ -35949,7 +36027,7 @@ static void DMAerialPanFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL aft
         if (s != UIGestureRecognizerStateBegan || ![objc_getAssociatedObject(g, kAerialHandStartKey) boolValue]) return;
         // (1.8.8.3 review: the touch-down noted is kept. UIKit counts a pan's travel from where it begins it, about 10 to 50 pt after the finger
         //  went down -- its location less its travel is that place, not the finger's: "drags from y 20 read as 30", DMAerialPanBefore --, so a
-        //  window of Aerial 3.0 trailed the finger by that way, as ours did before fix1883a)
+        //  window of Aerial 3.0 trailed the finger by that way, as our Stage Manager engine's did before 1.8.8.3)
         if ([(NSArray *)objc_getAssociatedObject(stage, &kA5DragDownKey) count] == 2) return;
         CGPoint p = [g locationInView:stage.superview], t = [g translationInView:stage.superview];
         objc_setAssociatedObject(stage, &kA5DragDownKey, @[[NSValue valueWithCGPoint:CGPointMake(p.x - t.x, p.y - t.y)], [NSValue valueWithCGPoint:stage.center]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -36011,6 +36089,7 @@ __attribute__((noinline)) static void DMAerial30NoteDown(UIView *stage, UITouch 
 - (void)dragTrace:(UIPanGestureRecognizer *)g {
     UIView *stage = g.view;
     UIGestureRecognizerState st = g.state;   // (its end too: Aerial's last move put right before the snap)
+    if (DMAerialLockedDrag(stage, g)) return;   // (Aerial's Lock: no move by hand, nothing of one's end -- the snap, the records -- follows: 1.8.8.4)
     if (st == UIGestureRecognizerStateBegan || st == UIGestureRecognizerStateChanged || st == UIGestureRecognizerStateEnded || st == UIGestureRecognizerStateCancelled)   // (cut short too: Aerial's step clamps that one as well, 1.8.8.3)
         DMA5DragFollow(stage, g, st == UIGestureRecognizerStateBegan);
     if (st != UIGestureRecognizerStateBegan && st != UIGestureRecognizerStateChanged) objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -36019,6 +36098,9 @@ __attribute__((noinline)) static void DMAerial30NoteDown(UIView *stage, UITouch 
     if ((g.state == UIGestureRecognizerStateChanged || g.state == UIGestureRecognizerStateEnded) && stage.frame.origin.y < DMTopLimit() && DMA5MacGeometry()) {
         CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f;
     }
+    // (the Recent Windows Strip, 1.8.8.4: over its cards it steps aside at once, at its edge it opens a slot; let go there, the window goes in -- its
+    //  snap, Behind the Dock and the title bar's record left alone: it comes back where it was before the drag)
+    if (DMRStripWindowDrag(stage, g, st)) return;
     // (1.7.3 item 3: let go, it lines up with what is near -- the desktop's edges, the windows around. 5.x: none of Aerial's classes is hooked, so
     //  its drag ends here, in our target after its own; 3.0's ends in DMAerialGestureAfter. A drag already snapped there finds nothing left to do.)
     if (g.state == UIGestureRecognizerStateEnded && stage.superview) DMSnapMoveEnded(stage);
@@ -36037,9 +36119,11 @@ __attribute__((noinline)) static void DMAerial30NoteDown(UIView *stage, UITouch 
 - (void)areaDrag:(UIPanGestureRecognizer *)g {
     UIView *stage = g.view.superview;
     if (!stage.superview || ![DMAerialStages() containsObject:stage]) return;
-    if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) { DMA5DragFollow(stage, g, g.state == UIGestureRecognizerStateBegan); return; }   // (as -dragTrace:)
+    if (DMAerialLockedDrag(stage, g)) return;   // (as -dragTrace:)
+    if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) { DMA5DragFollow(stage, g, g.state == UIGestureRecognizerStateBegan); DMRStripWindowDrag(stage, g, g.state); return; }   // (as -dragTrace:)
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) DMA5DragFollow(stage, g, NO);
     objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (DMRStripWindowDrag(stage, g, g.state)) return;   // (the Recent Windows Strip, 1.8.8.4: let go at its edge, the window goes in, as -dragTrace:)
     if (g.state == UIGestureRecognizerStateCancelled) DMTitleRecordHandEnded(stage, g.state);   // (a move by hand cut short: review 1.8.3 L2)
     if (g.state == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(stage);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
     if (g.state == UIGestureRecognizerStateCancelled) DMRememberStageFrame(stage);   // (its place kept at once, as -dragTrace: keeps it: 1.8.8.3)
@@ -36092,6 +36176,13 @@ static BOOL DMAerial5GestureLive(UIView *stage) {   // a pan (move) or a resize 
         if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) return YES;
     }
     return NO;
+}
+// The 0.2 s watcher's move or resize by hand (DMAerial5Watch: at its end the place is kept, the window leaves Fit to Window's tiles and the state
+// is saved): a pan of this window under way, but not on a window in Aerial's own Lock. Its drag moves nothing, neither Aerial's step nor ours
+// (DMAerialLockedDrag), and Aerial hides its resize handles while it is locked: no move by hand (1.8.8.4 review of B91: counted as one, a locked
+// window in Fit's tiles dragged for a moment and let go, nothing moved, was taken out of its tile).
+static BOOL DMAerial5HandGestureLive(UIView *stage) {
+    return !DMAerialStageLocked(stage) && DMAerial5GestureLive(stage);
 }
 // Locking the screen: Aerial minimizes every window to its round chip (3.0: our -minimizeStage hook ignored that). 5.0: the windows that were not
 // minimized when the lock began are brought back after the unlock with Aerial's own restore (its resolved -restoreFromMinimize).
@@ -36423,13 +36514,132 @@ static BOOL DMA5ShowWaits(UIView *stage) {
     if (f) f->back = YES;
     return YES;
 }
-// The app's corners in the Aerial 3.0 shape (see 3b in DMAerial5Theme): a mask layer of ours on Aerial's app holder, square on top, the window's
-// 12 pt at the bottom. It is kept at the holder's size on every display frame; when the holder is resized inside an animation (a layout, a tile
-// move, Aerial's own resize) the holder's running size animation is copied onto the mask, so both move together.
+// The app's corners in the Aerial 3.0 shape (see 3b in DMAerial5Theme): square on top, the window's 12 pt at the bottom.
+// The app's picture in Aerial's app holder -- its scene host view (_UISceneLayerHostContainerView), which Aerial lays out at the holder's bounds --
+// is clipped to those corners by its own layer (cornerRadius 12, continuous, the two bottom corners, masksToBounds), and it draws the holder's
+// fill (the base colour of theme step 4) in place of the holder, so nothing square is left in the holder's corners (1.8.8.4, plans/efficiency.md).
+// Until 1.8.8.3 a mask layer on the holder did the rounding for every window, and a mask makes the render server draw the live app offscreen and
+// composite it through the mask on every frame the app changes, and keep that buffer. Measured on iPadOS 15.6.1 (Aerial 5.1, a running
+// stopwatch in the window, interleaved rounds): backboardd 140.6 MB with the mask, 121.3 with the clip for a 931 x 643 pt window (no rounding at
+// all: 107.0); 151.0 against 104.6 at Fill (no rounding: 104.4), the GPU 15.5 against 12.2 % busy; three still windows at Fill 135.6 against
+// 100.5. A clip is the view's own bounds: it follows every size and animation of the view by itself and can never be committed at another size.
+// The holder's own radius cannot be used: Aerial sets it (30 pt) on every layout pass.
+// The clip is the mask's shape only when it is one picture at exactly the holder's bounds: the corners then match pixel for pixel (1 to 2 levels
+// apart, the mask's offscreen rounding). Every other holder keeps 1.8.8.3's mask, as before: one with no picture yet (a new window's first
+// moments, filled with the base colour), and one with more than one picture or a picture laid out otherwise -- a window brought back by a
+// respring shows its app through two scene host views of the same scene (two copies, the corners' edge drawn twice: up to 58 levels off at the
+// curve against a light background), one of them 0.49 pt shorter than the holder at Fill. A change between the two is made in one transaction.
+// Debug /tmp/msb-a5-cornermask: the mask on every holder, 1.8.8.3's way, for before/after rows.
+// The mask: kept at the holder's size on every display frame and before every commit; when the holder is resized inside an animation (a layout, a
+// tile move, Aerial's own resize) the holder's running size animation is copied onto the mask, so both move together.
 static const void *kA5MaskKey = &kA5MaskKey;
+static const void *kA5ClipKey = &kA5ClipKey;   // (on the holder: its fill handed to its scene host views; on a scene host view: our clip is on it)
 static void DMA5SyncHostMaskFor(UIView *stage, UIView *holder);
 static int gA5FrameMutations = 0;   // (counts every change the frame watcher makes: its idle pause, DMA5FrameWatcher)
 static void DMA5SyncHostMask(UIView *stage) { DMA5SyncHostMaskFor(stage, nil); }
+static BOOL DMA5CornersByMask(void) {   // (debug: /tmp/msb-a5-cornermask, the mask on every holder as in 1.8.8.3)
+#if DEBUG
+    return DMTestFlag("/tmp/msb-a5-cornermask");
+#else
+    return NO;
+#endif
+}
+static const CACornerMask kA5BottomCorners = kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+static void DMA5RoundBottom(CALayer *l) { l.cornerRadius = kMilkyWayCorner; l.cornerCurve = kCACornerCurveContinuous; l.maskedCorners = kA5BottomCorners; }
+static BOOL DMA5IsSceneHost(UIView *v) {   // (as DMStageInnerView knows it; the class found once, as these checks run before every commit)
+    static Class known = Nil;
+    Class c = object_getClass(v);
+    if (c == known) return YES;
+    if (![NSStringFromClass(c) containsString:@"SceneLayerHost"]) return NO;
+    known = c;
+    return YES;
+}
+static UIColor *DMA5HolderFill(void) { return DMSystemInterfaceStyle() == UIUserInterfaceStyleDark ? [UIColor blackColor] : [UIColor whiteColor]; }   // (theme step 4's base colour)
+static BOOL DMA5HostClipped(UIView *v, UIColor *fill) {   // (a scene host view's clip and fill as DMA5ClipHosts sets them)
+    CALayer *l = v.layer;
+    return l.masksToBounds && l.maskedCorners == kA5BottomCorners && fabs(l.cornerRadius - kMilkyWayCorner) < 0.01 && [l.cornerCurve isEqualToString:kCACornerCurveContinuous]
+        && [v.backgroundColor isEqual:fill];
+}
+static BOOL DMA5IsHeldPicture(UIView *v) { return [v.accessibilityIdentifier isEqualToString:@"MSBResizePicture"]; }   // (a corner resize's held picture: DMA5PictureEnd)
+static UIView *DMA5ClipHostOf(UIView *in) {   // the holder's one app picture, laid out exactly at its bounds (nil: the mask's holder)
+    if (DMA5CornersByMask()) return nil;
+    UIView *host = nil;
+    for (UIView *v in in.subviews) if (DMA5IsSceneHost(v)) { if (host) return nil; host = v; }
+    if (!host || !CATransform3DIsIdentity(host.layer.transform)) return nil;
+    CGRect f = host.frame, b = in.bounds;
+    if (fabs(f.origin.x - b.origin.x) > 0.01 || fabs(f.origin.y - b.origin.y) > 0.01 || fabs(f.size.width - b.size.width) > 0.01 || fabs(f.size.height - b.size.height) > 0.01) return nil;
+    return host;
+}
+static BOOL DMA5BottomRounded(CALayer *l) { return l.maskedCorners == kA5BottomCorners && fabs(l.cornerRadius - kMilkyWayCorner) < 0.01 && [l.cornerCurve isEqualToString:kCACornerCurveContinuous]; }
+static BOOL DMA5ClipsStale(UIView *in, UIView *host) {   // (our mask or the holder's own fill still on it, the picture not clipped and filled, a held picture square)
+    if (in.layer.mask || in.layer.backgroundColor || !objc_getAssociatedObject(in, kA5ClipKey) || !DMA5HostClipped(host, DMA5HolderFill())) return YES;
+    NSArray<UIView *> *subs = in.subviews;
+    if (subs.count > 1) for (UIView *v in subs) if (DMA5IsHeldPicture(v) && !DMA5BottomRounded(v.layer)) return YES;
+    return NO;
+}
+static void DMA5ClipHosts(UIView *stage, UIView *in, UIView *host) {
+    if (!DMA5ClipsStale(in, host)) return;
+    CALayer *m = objc_getAssociatedObject(in, kA5MaskKey);
+    BOOL masked = in.layer.mask != nil, filled = in.layer.backgroundColor != NULL;   // (another mask goes too, as ours always took its place)
+    if (masked && in.layer.mask != m) { static int toldOther = 0; if (toldOther++ < 5) DMLog([NSString stringWithFormat:@"[aerial5] %@: the app holder had another mask (%@): taken off", DMStageBundle(stage), in.layer.mask]); }
+    UIColor *fill = DMA5HolderFill();
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    if (!DMA5HostClipped(host, fill)) {
+        DMA5RoundBottom(host.layer); host.layer.masksToBounds = YES; host.backgroundColor = fill;
+        objc_setAssociatedObject(host, kA5ClipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    for (UIView *v in in.subviews) if (DMA5IsHeldPicture(v) && !DMA5BottomRounded(v.layer)) DMA5RoundBottom(v.layer);
+    if (masked) in.layer.mask = nil;
+    if (filled) in.backgroundColor = nil;
+    [CATransaction commit];
+    objc_setAssociatedObject(in, kA5ClipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    gA5FrameMutations++;
+    static int told = 0;
+    if ((masked || filled) && told++ < 40) DMLog([NSString stringWithFormat:@"[aerial5] %@: the app's corners clipped by its picture, the holder's fill on it%@", DMStageBundle(stage), masked ? @", our mask off" : @""]);
+}
+static void DMA5UnclipHosts(UIView *in) {   // (back to the mask: no single picture at the holder's bounds any more, or the debug A/B)
+    if (!objc_getAssociatedObject(in, kA5ClipKey)) return;
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    for (UIView *v in in.subviews) {
+        if (DMA5IsHeldPicture(v)) { v.layer.cornerRadius = 0; continue; }   // (the holder's mask rounds it)
+        if (!objc_getAssociatedObject(v, kA5ClipKey)) continue;
+        CALayer *l = v.layer;
+        l.cornerRadius = 0; l.cornerCurve = kCACornerCurveCircular; l.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kA5BottomCorners; l.masksToBounds = NO;   // (UIKit's own values)
+        v.backgroundColor = nil;
+        objc_setAssociatedObject(v, kA5ClipKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (!in.backgroundColor) in.backgroundColor = DMA5HolderFill();
+    [CATransaction commit];
+    objc_setAssociatedObject(in, kA5ClipKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    gA5FrameMutations++;
+    static int told = 0;
+    if (told++ < 40) DMLog([NSString stringWithFormat:@"[aerial5] the app's corners back to our mask on the holder (%lu views in it)", (unsigned long)in.subviews.count]);
+}
+static BOOL DMA5HolderClipped(UIView *in) { return objc_getAssociatedObject(in, kA5ClipKey) != nil; }
+#if DEBUG
+static void DMA5CornersInfo(void) {
+    UIColor *fill = DMA5HolderFill();
+    for (UIView *st in gA5StageCache.allObjects) {
+        UIView *in = DMStageInnerView(st);
+        CALayer *m = in ? objc_getAssociatedObject(in, kA5MaskKey) : nil;
+        NSMutableString *t = [NSMutableString stringWithFormat:@"[a5corners] %@ (shown %d, minimized %d): holder %@, fill %@, %@", DMStageBundle(st), !st.hidden && st.window != nil, DMStageMinimized(st),
+            in ? NSStringFromCGRect(in.bounds) : @"none", in.layer.backgroundColor ? @"on the holder" : @"none on the holder", m && in.layer.mask == m ? [NSString stringWithFormat:@"our mask %@", NSStringFromCGSize(m.bounds.size)] : @"no mask"];
+        for (UIView *v in in.subviews) if (DMA5IsSceneHost(v)) {
+            [t appendFormat:@" | picture %@ %@ (r %.1f %@ corners %lu clips %d)", NSStringFromCGRect(v.frame), DMA5HostClipped(v, fill) ? @"clipped and filled" : @"NOT clipped", v.layer.cornerRadius, v.layer.cornerCurve, (unsigned long)v.layer.maskedCorners, v.layer.masksToBounds];
+            id sc = nil; @try { sc = [v valueForKey:@"scene"]; } @catch (id e) {}
+            NSString *sid = nil; @try { sid = [sc valueForKey:@"identifier"]; } @catch (id e) {}
+            NSMutableString *ctx = [NSMutableString string];
+            NSMutableArray<CALayer *> *q = [NSMutableArray arrayWithObject:v.layer];
+            for (int k = 0; q.count && k < 60; k++) { CALayer *l = q.firstObject; [q removeObjectAtIndex:0];
+                if ([l respondsToSelector:NSSelectorFromString(@"contextId")]) [ctx appendFormat:@" %u", ((unsigned int (*)(id, SEL))objc_msgSend)(l, NSSelectorFromString(@"contextId"))];
+                if (l.sublayers.count < 12) [q addObjectsFromArray:l.sublayers]; }
+            [t appendFormat:@" scene %p %@ hidden %d alpha %.2f contexts%@", sc, sid ?: @"-", v.hidden, v.alpha, ctx.length ? ctx : @" none"];
+        }
+        DMLog(t);
+    }
+    DMLog([NSString stringWithFormat:@"[a5corners] %lu window(s), the A/B mask switch %@", (unsigned long)gA5StageCache.count, DMA5CornersByMask() ? @"ON (/tmp/msb-a5-cornermask)" : @"off"]);
+}
+#endif
 #if DEBUG
 // The [a5mask] trace (debug, /tmp/msb-a5-masktrace; 1.8.7.9): every size our mask is given, by whom, and whether the frame watcher runs.
 static const char *gA5MaskBy = NULL;   // (who sets the mask now; NULL: the frame watcher's tick, or a new or young window)
@@ -36456,6 +36666,9 @@ static void DMA5SyncHostMaskFor(UIView *stage, UIView *holder) {
     if (!on) return;
     UIView *in = holder ?: DMStageInnerView(stage);
     if (!in) return;
+    UIView *host = DMA5ClipHostOf(in);
+    if (host) { DMA5ClipHosts(stage, in, host); return; }   // (the app's picture is in, at the holder's bounds: it rounds itself)
+    DMA5UnclipHosts(in);
     CALayer *m = objc_getAssociatedObject(in, kA5MaskKey);
     if (!m) {
         m = [CALayer layer];
@@ -37115,7 +37328,7 @@ static UIView *DMA5EarlyHolder(UIView *stage) {
     return nil;
 }
 // A young window (its first 0.6 s): the app area in our shape -- Aerial's own rounding disarmed (no corners masked, as 3b of the theme does) and our
-// mask (square top, 12 pt bottom) -- on the holder, early one included.
+// corners (square top, 12 pt bottom: the mask on a holder with no app picture yet, early one included, then the picture's own clip).
 static void DMA5FixYoungStage(UIView *stage) {
     UIView *h = DMA5EarlyHolder(stage);
     if (!h || DMStageMinimized(stage)) return;
@@ -37242,16 +37455,23 @@ static void DMA5CatchNewStagesPass(void) {
     if (debug) spent += CACurrentMediaTime() - began;
 }
 // ---- Aerial 5's corner masks as the commit draws them (1.8.7.9) ----
-// Before every Core Animation commit, after the pass above and its put-backs: the corner mask of each shown Aerial 5 window is set from its app
-// holder, so a mask and its holder are never committed at two sizes. The frame watcher keeps them in step on display frames only, and its pass
+// Before every Core Animation commit, after the pass above and its put-backs: the corners of each shown Aerial 5 window are put right -- a scene
+// host view that came into a holder is clipped there and then (DMA5ClipHosts), and a mask still on a holder with no app picture yet is set from
+// that holder, so a mask and its holder are never committed at two sizes. The frame watcher keeps them in step on display frames only, and its pass
 // before a commit runs first in the pass above (DMA5WakeFrameWatcher), before the put-backs. Anything else that changes a holder between two ticks
 // -- a put-back, Aerial's own passes, our Fit re-tiles (KT 18 Nov: a window behind briefly smaller as another is minimized or closed) -- was
 // drawn for a frame with the mask of the size before. Only a mask whose size differs from its holder's is set (two compares per shown window
 // otherwise). When a shown window or a view above it still needs layout, the holder can change in the commit's own layout pass, after this
-// observer: then, and only then (never on every turn), one pre-commit handler sets those masks again after that layout. Aerial 5 with our theme
-// only (DMA5MacGeometry): Aerial 3.0, Zetsu, MilkyWay4 and Stage Manager have no such mask.
-static BOOL DMA5MaskStale(UIView *stage) {   // (our mask is on the holder, at another size)
+// observer: then, and only then (never on every turn), one pre-commit handler puts the corners right again after that layout -- a mask to its
+// holder's new size, and a clipped window back to the mask when that layout moved its app's picture off the holder's bounds (Aerial's trim crops
+// the app that way), gave its holder a second picture, or filled its holder again: a clip follows a change of the picture's size by itself, not
+// those, and it was committed square at the bottom corners for that frame. Aerial 5 with our theme only (DMA5MacGeometry): Aerial 3.0, Zetsu,
+// MilkyWay4 and Stage Manager have no such corners.
+static BOOL DMA5MaskStale(UIView *stage) {   // (our mask is on the holder, at another size; or the clip is not as it should be)
     UIView *in = DMStageInnerView(stage);
+    UIView *host = in ? DMA5ClipHostOf(in) : nil;
+    if (host) return DMA5ClipsStale(in, host);
+    if (in && DMA5HolderClipped(in)) return YES;   // (clipped, and now the mask's: a second picture came, or the picture is laid out otherwise)
     CALayer *m = in ? objc_getAssociatedObject(in, kA5MaskKey) : nil;
     if (!m || in.layer.mask != m) return NO;
     CGSize b = in.layer.bounds.size, s = m.bounds.size;
@@ -37281,6 +37501,17 @@ static void DMA5MaskDebugAtCommit(void) {
         for (UIView *st in gA5StageCache.allObjects) {
             if (st.hidden || !st.window) continue;
             UIView *in = DMStageInnerView(st);
+            if (in && DMA5HolderClipped(in)) {   // (a clipped holder whose picture is not one, at its bounds, clipped and filled: its corners are not the mask's)
+                UIView *host = DMA5ClipHostOf(in);
+                if (!host || !DMA5HostClipped(host, DMA5HolderFill()) || in.layer.mask || in.layer.backgroundColor) {
+                    bands++;
+                    NSMutableString *pics = [NSMutableString string];
+                    for (UIView *v in in.subviews) if (DMA5IsSceneHost(v)) [pics appendFormat:@" %@%@", NSStringFromCGRect(v.frame), DMA5HostClipped(v, DMA5HolderFill()) ? @" clipped" : @" NOT clipped"];
+                    DMLog([NSString stringWithFormat:@"[a5mask] COMMITTED %@: holder %@ clipped but its pictures are%@%@%@", DMStageBundle(st), NSStringFromCGRect(in.bounds), pics.length ? pics : @" none",
+                           in.layer.mask ? @", a mask on it" : @"", in.layer.backgroundColor ? @", its fill on it" : @""]);
+                }
+                continue;
+            }
             CALayer *m = in ? objc_getAssociatedObject(in, kA5MaskKey) : nil;
             if (!m || in.layer.mask != m) continue;
             CGSize b = in.layer.bounds.size, k = m.bounds.size;
@@ -37317,7 +37548,7 @@ static void DMA5MasksAtCommit(void) {
     for (UIView *st in gA5StageCache.allObjects) {
         if (st.hidden || !st.window) continue;
         if (DMA5MaskStale(st)) DMA5SyncHostMaskBy(st, "the end of the pass before the commit");
-        for (UIView *v = st; v && !layoutLater; v = v.superview) layoutLater = v.layer.needsLayout;
+        for (UIView *v = st; v && !layoutLater; v = v.superview) layoutLater = v.layer.needsLayout;   // (a clipped window too: its layout can move or add its app's picture)
     }
     static int handlers = -1;
     if (handlers < 0) handlers = [CATransaction respondsToSelector:NSSelectorFromString(@"addCommitHandler:forPhase:")];
@@ -37467,7 +37698,7 @@ static void DMAerial5Watch(void) {
                 if (s && !objc_getAssociatedObject(s, kStageIntentKey)) DMRememberStageFrame(s);   // its first settled place is the one to keep
             });
         }
-        BOOL live = DMAerial5GestureLive(stage), was = [objc_getAssociatedObject(stage, kA5GestureKey) boolValue];
+        BOOL live = DMAerial5HandGestureLive(stage), was = [objc_getAssociatedObject(stage, kA5GestureKey) boolValue];   // (a locked window's drag: none by hand)
         if (live && !was) {
             objc_setAssociatedObject(stage, kA5GestureKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(stage, kStageGestureKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -40064,9 +40295,11 @@ static void DMRefitTopDone(int part) {
     CFRelease(n);
     DMLog([NSString stringWithFormat:@"[menubar] windows placed with the 24 pt bar's top: %@ re-fitted (once)", part == 2 ? @"Stage Manager's" : @"the saved windows'"]);
 }
-static CGFloat DMTopLimit(void) { return DMAutoHideLayout() ? 0.0 : MSBDMenuBarTopLimit(DMMenuBarHeight()); }   // (tiles and the window clamps: right under the menu bar -- 24 on a 24 pt bar --, or the top edge while it hides itself)
-static BOOL gSBHidden = NO;                    // the bar is hidden right now (the iPad's: 1.8.7, another display's is gDMTVBarAH)
 #include "../common/BarAutoHide.h"   // (1.8.7 row 14: Automatically Hide and Show the Menu Bar per display, plain C, Mac-tested)
+// (tiles and the window clamps of every engine -- our Stage Manager engine's desktop and stage top too, 1.8.8.4: right under the menu bar -- 24 on a
+//  24 pt bar --, or the top edge while it hides itself: BarAutoHide.h MSBDBarAHWindowTop)
+static CGFloat DMTopLimit(void) { return MSBDBarAHWindowTop(MSBDMenuBarTopLimit(DMMenuBarHeight()), DMAutoHideLayout()); }
+static BOOL gSBHidden = NO;                    // the bar is hidden right now (the iPad's: 1.8.7, another display's is gDMTVBarAH)
 // 1.8.7 row 14: the connected TV's own auto-hide state (iPadOS drives one external display at a time) -- on while its own setting (the iPad's until changed
 // for it) is on and a pointer is attached; its bar copies only; no window moves (Stage Manager's top keeps the bar's room). DMAutoHideTVTick, below.
 static MSBDBarAHState gDMTVBarAH;
@@ -40335,7 +40568,9 @@ static void DMAutoHideKeepBarAbove(BOOL on) {
     }
 }
 // Moves the windows touching the top edge down by the bar's height (show) or back (hide). Also used after Fit places windows afresh while the bar shows.
+static void DMAutoHideSMSlideBars(BOOL show, CGFloat h, BOOL animated);   // (our Stage Manager engine's title bars, as step 2 below: after DMSMChrome)
 static void DMStatusBarMoveWindows(BOOL show, CGFloat h, BOOL animated) {
+    DMAutoHideSMSlideBars(show, h, animated);   // (1.8.8.4, engine parity: our Stage Manager engine's windows, whose title bars slide as below)
     // (a window "touches the top" above 23 -- one point under a 24 pt bar --, at Medium and Large above the bar's own height less 1: 1.7.3)
     const CGFloat touching = MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) - 1.0;
     NSMutableArray *stages = [NSMutableArray array];
@@ -40345,7 +40580,7 @@ static void DMStatusBarMoveWindows(BOOL show, CGFloat h, BOOL animated) {
         if (titleOnly) {   // step 2: the window stays, its title bar slides (a window left moved down from before is put back first)
             if (DMAutoHideShiftOf(st) > 0) DMAutoHideUnshift(st);
             CGFloat top = st.frame.origin.y, cur = DMAutoHideTitleShiftOf(st);
-            CGFloat want = (show && !st.hidden && !DMStageMinimized(st) && top < touching) ? MAX(0.0, h - MAX(0.0, top)) : 0.0;
+            CGFloat want = !st.hidden && !DMStageMinimized(st) ? MSBDBarAHTitleSlide(top, h, touching, show) : 0.0;   // (BarAutoHide.h: every engine's slide)
             if (fabs(want - cur) < 0.25) continue;
             if (want > 0 && [objc_getAssociatedObject(st, kStageGestureKey) boolValue]) continue;   // (not mid-drag)
             DMAutoHideSetTitleShift(st, want, animated);
@@ -40738,16 +40973,14 @@ static void DMAutoHideRetopAll(BOOL layout, BOOL tiled, BOOL modeChanged) {
         //  that do not reach the bottom (M1, 1.7.3: Settings and Clock halves kept their size under a shorter bar, a 7 pt gap above the Dock))
         if (bottom < 0) { CGRect fill = DMLayoutFrame(@"fill"); bottom = CGRectIsNull(fill) || CGRectIsEmpty(fill) ? CGRectGetMaxY(DMUsableArea()) : CGRectGetMaxY(fill); }
         CGRect f = st.frame, was = f;
-        f.origin.y -= DMAutoHideShiftOf(st);
-        BOOL fullHeight = CGRectGetMaxY(f) > bottom - 3.0;   // (reaching the usable bottom, or below it behind the Dock)
+        f.origin.y -= DMAutoHideShiftOf(st);   // (a full-height one: reaching the usable bottom, or below it behind the Dock -- MSBDBarAHRetop)
         BOOL wasTop = [objc_getAssociatedObject(st, kSBWasTopKey) boolValue] && CACurrentMediaTime() - gSBTurnAt > 1.2;
         if (wasTop) objc_setAssociatedObject(st, kSBWasTopKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         // (a turn scales a window's place: one that was at the top goes back to it. A full-height window keeps its bottom where the usable area
-        // ends, not lower: an engine may already have taken our move into its frame)
-        CGFloat bar = DMMenuBarHeight(), limit = MSBDMenuBarTopLimit(bar);   // (the top under the bar: 24 on a 24 pt bar)
-        if (layout && (fabs(f.origin.y - MSBDMenuBarWasTop(bar)) < 2.0 || (wasTop && f.origin.y > 0.5 && f.origin.y < 60.0))) { if (fullHeight) f.size.height = MAX(bottom, CGRectGetMaxY(f) - f.origin.y); f.origin.y = 0; }
-        else if (!layout && f.origin.y < MSBDMenuBarUnderTop(bar)) { if (fullHeight) f.size.height = MAX(bottom, CGRectGetMaxY(f)) - limit; f.origin.y = limit; }
-        else continue;
+        // ends, not lower: an engine may already have taken our move into its frame. Every engine's rule, ours too: BarAutoHide.h MSBDBarAHRetop)
+        double ry = f.origin.y, rh = f.size.height;
+        if (!MSBDBarAHRetop(&ry, &rh, bottom, DMMenuBarHeight(), layout, wasTop)) continue;
+        f.origin.y = ry; f.size.height = rh;
         if (CGRectEqualToRect(f, was)) continue;
         objc_setAssociatedObject(st, kSBRetopKey, @(tries + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         DMAutoHideUnshift(st);
@@ -40755,8 +40988,14 @@ static void DMAutoHideRetopAll(BOOL layout, BOOL tiled, BOOL modeChanged) {
         DMLog([NSString stringWithFormat:@"[autohide] %@ %@ to %@", DMStageBundle(st), layout ? @"up to the top edge" : @"back under the bar", NSStringFromCGRect(f)]);
     }
 }
+// 1.8.8.4 (engine parity, item 5): our Stage Manager engine's windows at the top, as DMAutoHideRetopAll's (after DMSMRefitOldTopTick: DMAutoHideSMRetop)
+static NSMutableDictionary<NSString *, NSNumber *> *gSMRetopTries;   // (window key -> its moves in this mode: at most 4, as kSBRetopKey)
+static int gSMRetopPending = -1;   // (a switch not done yet: 1 the bar's room given, 0 taken back -- the tick runs on while one waits)
+static void DMAutoHideSMRetop(BOOL layout, BOOL active, BOOL modeChanged);
+static BOOL DMSMFree(void);
 static void DMAutoHideTick(void) {   // every 0.1 s
     static BOOL wasActive = NO, wasLayout = NO;
+    BOOL modeChanged = NO;
     if (gSBHidden) DMEdgeStripPlace();   // (the top-edge strip where the screen's top is now: the window's turn comes once it shows, a turn moves it)
     BOOL active = DMAutoHideActive(), layout = DMAutoHideLayout();
     if (active != wasActive) {
@@ -40789,11 +41028,12 @@ static void DMAutoHideTick(void) {   // every 0.1 s
         if (!gSBHidden && DMAutoHideLayout()) DMStatusBarMoveWindows(YES, DMStatusBarHeightForMove(), YES);
     });
     if (layout != wasLayout) {
-        wasLayout = layout;
+        wasLayout = layout; modeChanged = YES;
         if (!layout) DMStatusBarMoveWindows(NO, 0, NO);   // (nothing stays moved down)
         BOOL tiled = DMFitEnabled() && gFitGroup.count >= 2;
         if (tiled) DMApplyGroupSlots(nil);   // tiles take (or give back) the 24 pt, once
         DMAutoHideRetopAll(layout, tiled, YES);
+        if (DMSMFree() && DMFitEnabled() && gSMFitSlots.count >= 2) DMSMFitTick(YES);   // (1.8.8.4: our Stage Manager engine's tiles too)
     }
     static CFTimeInterval lastRetop = 0;   // windows that turn up later (restored after a respring, opened by the engine at its remembered place)
     if (layout && active && CACurrentMediaTime() - lastRetop > 1.0) {
@@ -40801,6 +41041,7 @@ static void DMAutoHideTick(void) {   // every 0.1 s
         DMAutoHideRetopAll(YES, DMFitEnabled() && gFitGroup.count >= 2, NO);
         if (!gSBHidden && CACurrentMediaTime() - gSBTurnAt > 1.5) DMStatusBarMoveWindows(YES, DMStatusBarHeightForMove(), YES);   // (the bar shows: windows at the top below it, also ones that just came; not mid-turn)
     }
+    DMAutoHideSMRetop(layout, active, modeChanged);   // (1.8.8.4: our Stage Manager engine's: at a mode change, then once a second while active)
     DMAutoHideKeepBarAbove(layout);
     DMAutoHideKeepTitlesDown();
     DMAutoHideTVTick();   // (1.8.7 row 14: the TV's own bar, by its own setting)
@@ -40822,6 +41063,18 @@ static void DMAutoHideTick(void) {   // every 0.1 s
 // The 0.1 s tick only runs while the setting is on (off by default: then nothing of this runs at all). Switched off, it runs on for 1.5 s so the
 // bar, the windows and the tiles settle back (DMAutoHideTick's "off" transition), then stops. Checked at start and on every preferences change.
 static NSTimer *gAutoHideTimer = nil;
+// (1.8.8.4: and on while our Stage Manager engine's windows still wait to go back under the bar -- DMAutoHideSMRetop --, at most 10 s more. Turned on
+//  again meanwhile, DMAutoHideRefreshTimer has started a new tick, which takes any waiting switch on: this one stops at once, as before 1.8.8.4 -- left
+//  waiting, it ran beside the new one, every tick twice, for up to 10 s and then dropped the new tick's waiting switch, review of 1.8.8.4)
+static void DMAutoHideStopTimerLater(NSTimer *t, int waited) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((waited ? 0.5 : 1.5) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gAutoHideTimer == t) return;   // (it is the running tick: nothing to stop)
+        BOOL again = gAutoHideTimer != nil;   // (on again meanwhile: a new tick runs)
+        if (!again && gSMRetopPending >= 0 && waited < 20) { DMAutoHideStopTimerLater(t, waited + 1); return; }
+        if (!again && gSMRetopPending >= 0) { gSMRetopPending = -1; DMLog(@"[autohide] setting off: Stage Manager's windows still could not be put under the bar after 10 s"); }
+        [t invalidate]; DMLog(again ? @"[autohide] setting off: its tick stopped (on again: the new tick goes on)" : @"[autohide] setting off: its tick stopped");
+    });
+}
 static void DMAutoHideRefreshTimer(void) {
     gAutoHideReadAt = -10;   // (read the preference again now)
     BOOL on = DMAutoHidePref() || DMAutoHideTVSetting(DMAutoHideTVScreen());   // (1.8.7 row 14: a TV's own setting runs it too)
@@ -40833,9 +41086,7 @@ static void DMAutoHideRefreshTimer(void) {
         DMLog(@"[autohide] setting on: its tick started");
     } else if (!on && gAutoHideTimer) {
         NSTimer *t = gAutoHideTimer; gAutoHideTimer = nil;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (gAutoHideTimer != t) { [t invalidate]; DMLog(@"[autohide] setting off: its tick stopped"); }
-        });
+        DMAutoHideStopTimerLater(t, 0);
     }
 }
 static BOOL gAutoHideStarted = NO;
@@ -40871,6 +41122,7 @@ static void DMAutoHideDebugInfo(void) {
             if (DMAutoHideShiftOf(st) > 0) objc_setAssociatedObject(st, kSBWasTopKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(st, kSBRetopKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (a new shape: new tries)
         }
+        gSMRetopTries = nil;   // (our Stage Manager engine's windows: new tries too -- DMAutoHideSMRetop)
         DMAutoHideBeforeRetile(); gSBTurnAt = CACurrentMediaTime();
         DMLog([NSString stringWithFormat:@"[autohide] the screen turns to %lld: moves taken back first", o]);
     }
@@ -43752,6 +44004,20 @@ static BOOL DMSMPastEdgeKeepIn(CGPoint *cp, CGSize pts, CGSize scr, CGRect u) {
     *cp = k;
     return YES;
 }
+// A window moved by the menu bar hiding itself or coming back (1.8.8.4, DMAutoHideSMRetop: the whole window `was` -> `now`, on the screen of size scr):
+// a record of it at `was` follows it, so it stays past the edge at its new top.
+static void DMSMPastEdgeMoved(CGRect was, CGRect now, CGSize scr) {
+    if (!gSMPastEdge.count || was.size.height <= kSMBarH || now.size.height <= kSMBarH) return;
+    CGPoint c0 = CGPointMake(CGRectGetMidX(was), CGRectGetMinY(was) + kSMBarH + (was.size.height - kSMBarH) / 2.0);
+    CGPoint c1 = CGPointMake(CGRectGetMidX(now), CGRectGetMinY(now) + kSMBarH + (now.size.height - kSMBarH) / 2.0);
+    CGSize s0 = CGSizeMake(was.size.width, was.size.height - kSMBarH), s1 = CGSizeMake(now.size.width, now.size.height - kSMBarH);
+    for (NSString *key in [gSMPastEdge allKeys]) {
+        NSArray<NSValue *> *r = gSMPastEdge[key];
+        if (r.count != 3 || !DMSMPastEdgeSame(c0, s0, scr, r[0].CGPointValue, r[1].CGSizeValue, r[2].CGSizeValue)) continue;
+        gSMPastEdge[key] = @[[NSValue valueWithCGPoint:c1], [NSValue valueWithCGSize:s1], r[2]];
+        DMLog([NSString stringWithFormat:@"[smpast] %@ past an edge moved with the menu bar's room: kept there (centre %@)", DMSMKeyText(key), NSStringFromCGPoint(c1)]);
+    }
+}
 // The desktop of the screen s of this size as our requests read it (DMSMUsableAreaForIdentity: under its menu bar, down to its Dock's line), for the
 // drag's hold and the layout passes' keep. CGRectNull when the desktop read is not that screen's: a TV whose display is not read is never held to the
 // iPad's desktop.
@@ -44757,7 +45023,8 @@ static void DMSMBringToFront(NSString *key) {   // (newest interaction time in t
 @property (nonatomic) CGFloat caught;
 @property (nonatomic) BOOL downTwo, follows, handed;
 @end
-static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 1 s after: the stage area reaches the screen bottom, _stageAreaForModel)
+static CFTimeInterval gSMDragUntil = 0; static CGFloat gSMDragSlid = 0;   // (a title-bar drag in progress, and 1 s after: the stage area reaches the screen bottom, _stageAreaForModel; the drag's start on a title bar slid down with the menu bar: DMAutoHideSMBake)
+__attribute__((noinline)) static CGFloat DMAutoHideSMBake(UIView *bar);   // (1.8.8.4: after DMSMChrome; its own function, so a crash in it is the auto-hide's, ^_?DMAutoHide)
 // Our Stage Manager title bar's drag (-dm_pan:) has ended with the finger's travel t (in the card's superview): YES and the place to ask for when it
 // snaps as every engine's windows snap (1.7.3 item 3, WindowSnap.h) -- the window as drawn (our bar and the card) against the desktop of the iPad's
 // screen (DMSMUsableAreaForIdentity: under the menu bar, above the Dock line) and the stage's other windows (DMSMOpenWindowFrames). Stage Manager's own
@@ -44923,6 +45190,10 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
         t = CGPointMake(t.x + _handOff.x, t.y + _handOff.y);
         if (end) _handed = NO;
     }
+    // (1.8.8.4: a drag that starts on the title bar slid down with the menu bar over a window at the top edge: the window moves down to it, under the
+    //  finger -- DMAutoHideSMBake, as the other engines' -- and the drag goes on from there)
+    if (g.state == UIGestureRecognizerStateBegan) gSMDragSlid = DMAutoHideSMBake(self);
+    t.y += gSMDragSlid;
     // (1.8.8.3: the drag held to SMPastEdge.h's rule at every move -- the top under the menu bar, as every engine holds a title bar; past the screen's
     //  left, right and bottom edges as far as the finger takes it -- so the window stops under the menu bar instead of jumping at the drop)
     if (g.state == UIGestureRecognizerStateBegan) DMSMPastEdgeDragBegin(card);
@@ -44942,7 +45213,7 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
     }
 #endif
     if (g.state == UIGestureRecognizerStateBegan) { gSMDragUntil = CACurrentMediaTime() + 3600.0; DMSMBringToFront(w); }
-    if (g.state == UIGestureRecognizerStateChanged) card.transform = CGAffineTransformMakeTranslation(t.x, t.y);
+    if (g.state == UIGestureRecognizerStateChanged || (g.state == UIGestureRecognizerStateBegan && gSMDragSlid > 0)) card.transform = CGAffineTransformMakeTranslation(t.x, t.y);
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         gSMDragUntil = CACurrentMediaTime() + 1.0;
         DMTitleRecordMovedSM(w);   // (a move by hand: the title bar's frame from before is older, P4-1)
@@ -45939,9 +46210,11 @@ static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) {   // (t
 // Dock height for that screen size, from the stage-area pass), so TV windows no longer reach under the TV's Dock.
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut);
 static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut) { return DMSMUsableAreaForIdentity(DMSMStageDisplayIdentity(stage), screenOut); }
-static CGFloat DMSMTopBarOf(CGSize size) {   // the menu bar's height on the screen of that size: the iPad's (DMMenuBarHeight), a TV's (DMTVBarHeight)
+// The top of the desktop on the screen of that size, where the windows' title bars may go: the iPad's (DMTopLimit: under its bar, the top edge while the
+// bar hides itself -- 1.8.8.4, as every engine), a TV's (under its bar: DMTVBarHeight)
+static CGFloat DMSMTopBarOf(CGSize size) {
     CGSize main = [UIScreen mainScreen].bounds.size;
-    return CGSizeEqualToSize(size, main) || CGSizeEqualToSize(size, CGSizeMake(main.height, main.width)) ? DMMenuBarHeight() : DMTVBarHeight();
+    return CGSizeEqualToSize(size, main) || CGSizeEqualToSize(size, CGSizeMake(main.height, main.width)) ? DMTopLimit() : DMTVBarHeight();
 }
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {   // (the same for the display a plan is asked on)
     if (!DMSMIsMainIdentity(identity)) {
@@ -45956,13 +46229,12 @@ static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {   // (
         }
     }
     if (screenOut) *screenOut = [UIScreen mainScreen].bounds.size;
-    // (the top where Stage Manager's stage area has it: its status bar height raised to our menu bar's (DMMenuBarHeight: 24 pt, 20 on Home-button
-    //  iPads), our title bar below that -- the _statusBarHeight hook, also while the bar hides itself. DMUsableArea starts a point higher for the
-    //  other engines' tiles: Fit tiles and windows placed from there stood 1 pt above the stage area, their title bars a point under the menu bar,
-    //  and Stage Manager's constraint moved them again)
+    // (the top where Stage Manager's stage area has it: the _statusBarHeight hook -- our menu bar's height (DMMenuBarHeight: 24 pt, 20 on Home-button
+    //  iPads), our title bar below that -- and the other engines' (DMTopLimit). While the bar hides itself the screen's top edge, as theirs (1.8.8.4,
+    //  engine parity: it was the bar's height then too, so our windows, tiles and drags stopped 24 pt lower than Aerial's, Zetsu's and MilkyWay4's))
     CGRect u = DMUsableArea();
-    CGFloat bar = DMMenuBarHeight();
-    if (CGRectGetMinY(u) < bar) u = CGRectMake(u.origin.x, bar, u.size.width, MAX(100.0, CGRectGetMaxY(u) - bar));
+    CGFloat top = DMTopLimit();
+    if (CGRectGetMinY(u) < top) u = CGRectMake(u.origin.x, top, u.size.width, MAX(100.0, CGRectGetMaxY(u) - top));
     return u;
 }
 // Attributes placing a window at a layout on its stage's screen (the whole window; the card is under our title bar).
@@ -46018,9 +46290,19 @@ static BOOL DMNewWindowsFillFor(id identity) {
 // The window for what opens (choice: Window Size's Default, Small or Large -- an app at Medium opens Default --, or App Window Sizes' iPhone;
 // MSBDOpeningSize's answer but Fill, which is the Fill layout): Default, Small and Large Window Size's own windows (1.8.7's exactly), iPhone the
 // phone held upright under our title bar (common/AppWindowSize.h MSBDWindowPhoneIn), each never smaller than Stage Manager lets a window be.
+// A new window's desktop at Window Size's Small or Large or an app's iPhone size on our engine: on the iPad's screen under the menu bar also while it
+// hides itself, as the other engines' (DMNewWindowFrameWindowAt): the same window on every engine (1.8.8.4, now that our desktop reaches the top edge
+// then). Default (the middle place: its top 12 pt under the bar either way) and Fill take the desktop as it is, as theirs. A TV's as it is.
+static CGRect DMSMNewWindowDesk(CGRect u, CGSize scr) {
+    CGSize main = [UIScreen mainScreen].bounds.size;
+    if (!(CGSizeEqualToSize(scr, main) || CGSizeEqualToSize(scr, CGSizeMake(main.height, main.width)))) return u;
+    CGFloat bar = DMMenuBarHeight();
+    return CGRectGetMinY(u) < bar ? CGRectMake(u.origin.x, bar, u.size.width, MAX(100.0, CGRectGetMaxY(u) - bar)) : u;
+}
 static CGRect DMSMNewWindowFrameAt(int choice, CGRect u, CGSize scr) {
     if (CGRectIsNull(u) || CGRectIsEmpty(u) || scr.width < 1.0 || scr.height < 1.0) return CGRectNull;
     if (choice != MSBDWindowSizeDefault) DM_FEATURE_MARK("window-size-open-sm");
+    if (choice != MSBDWindowSizeDefault) u = DMSMNewWindowDesk(u, scr);   // (under the bar also while it hides itself, as the other engines')
     CGSize least = CGSizeMake(MAX(DMSMMinWindowWidth(scr), kMSBDWindowMinWidth), kMSBDWindowMinAppHeight + kSMBarH);   // (as DMSMLayoutFrameIn's)
     if (choice == kMSBDOpenIPhone) { DM_FEATURE_MARK("app-window-size-iphone-sm"); return MSBDWindowPhoneIn(u, kSMBarH, least); }
     return MSBDWindowSizeFrameIn(choice, u, scr, DMCenterTopFor(scr), least);
@@ -46990,6 +47272,43 @@ static CGRect DMSMBarFrame(UIView *card) {
     DM_FEATURE_MARK("sm-bar-on-content-17");
     return CGRectMake(0, top - kSMBarH, w, kSMBarH + 1.0 / MAX(1.0, scale));
 }
+// ... and, while the menu bar shows over its window at the top edge, slid down with the bar (1.8.8.4, DMAutoHideSMSlideBars below): part of the bar's
+// frame, which every layout of the card sets again (a transform would only be undone with it), worked out from where the card is at each layout, so
+// a resize, a turn or a request that moves the window takes its title bar along (BarAutoHide.h MSBDBarAHTitleSlide, every engine's rule). Not on a
+// card scaled in the App Switcher (it takes no touch there), not on a TV, not while its drag is going on. gSMSlideBarH: the bar's height while it shows
+// over windows with auto-hide on (DMStatusBarMoveWindows), else 0 -- then nothing is worked out.
+static CGFloat gSMSlideBarH = 0;
+static BOOL DMAutoHideSMBarDragged(UIView *bar);
+// (its own function, not inlined into DMSMBarFrameNow: a crash in the slide is the auto-hide's -- crash rule ^_?DMAutoHide, Automatically Hide and Show
+//  the Menu Bar turned off --, not the whole window code's; DMAutoHideSMBake the same, not the title bar's drag. Review of 1.8.8.4)
+__attribute__((noinline)) static CGFloat DMAutoHideSMSlideFor(UIView *card, UIView *bar);
+static CGFloat DMAutoHideSMSlideFor(UIView *card, UIView *bar) {
+    if (!(gSMSlideBarH > 0) || !bar.userInteractionEnabled || !card.window || DMAutoHideSMBarDragged(bar)) return 0.0;
+    UIScreen *main = [UIScreen mainScreen];
+    if ((card.window.screen ?: main) != main) return 0.0;
+    CGRect c = [card convertRect:card.bounds toCoordinateSpace:main.coordinateSpace];   // (the window's card on the screen: the whole window starts our bar above it)
+    return MSBDBarAHTitleSlide(CGRectGetMinY(c) - kSMBarH, gSMSlideBarH, MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) - 1.0, YES);
+}
+static CGRect DMSMBarFrameNow(UIView *card, UIView *bar) {
+    CGRect f = DMSMBarFrame(card);
+    f.origin.y += DMAutoHideSMSlideFor(card, bar);
+    return f;
+}
+// A title bar's window card: the one whose layout placed it last (DMSMChrome: bar.card), while the bar is still in it -- anywhere under it, not as its
+// direct subview: the card hands the views added to it to its inner clipping view (_SBFActualClippingView, DMSMChromeOnTop), so a title bar's
+// superview is never its card on the iPad. Asked as "superview == card", every show and hide of the menu bar moved no title bar and a title bar slid
+// down by a card's layout was never taken back (1.8.8.4's first device passes, iPadOS 16.7.7, 17.5.1 and 18.5; a test card holding the bar itself hid it).
+static UIView *DMAutoHideSMCardOf(UIView *bar) {
+    if (![bar isKindOfClass:[DMSMTitleBar class]]) return nil;
+    UIView *card = ((DMSMTitleBar *)bar).card;
+    return card && [bar isDescendantOfView:card] ? card : nil;
+}
+static CGFloat DMAutoHideSMSlideDrawn(UIView *bar) {   // (how far a title bar is slid down as it is drawn now: its frame against its place)
+    UIView *card = DMAutoHideSMCardOf(bar);
+    if (!card) return 0.0;
+    CGFloat d = bar.frame.origin.y - DMSMBarFrame(card).origin.y;
+    return isfinite(d) && d > 0.25 ? d : 0.0;
+}
 static void DMSMChrome(UIView *card) {
     DMSMHoldGrowingCard(card);   // (a window growing out of its Dock icon: its card stays out of sight -- DMSMGrowFromDock)
     DMSMTitleBar *bar = objc_getAssociatedObject(card, kSMBarKey);
@@ -47066,10 +47385,53 @@ static void DMSMChrome(UIView *card) {
     if (lookChanged) objc_setAssociatedObject(card, &kSMGripLookKey, look, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!wasShown || sizeChanged || bundleChanged || scaledChanged || lookChanged) DMSMPlaceGrips(card, bundle, !scaled);
     if (bar.userInteractionEnabled == scaled) { bar.userInteractionEnabled = !scaled; if (scaled) DM_FEATURE_MARK("sm-switcher-card-bar"); }
-    CGRect f = DMSMBarFrame(card);   // (17/18: on the window content's own top edge -- above)
+    CGRect f = DMSMBarFrameNow(card, bar);   // (17/18: on the window content's own top edge -- above; slid down with the menu bar while it shows over it)
     if (!CGRectEqualToRect(bar.frame, f)) bar.frame = f;
     DMSMChromeOnTop(card, bar);   // (the bar and the grips over SpringBoard's own views of the card: it puts its content back on top, above)
     if (!wasShown || bundleChanged) [bar dm_updateLights];
+}
+// 1.8.8.4 (engine parity, item 5): our title bars with the menu bar that hides itself, as Aerial's, Zetsu's and MilkyWay4's (the window stays, its title
+// bar slides with the bar).
+// While the bar hides itself a window can be at the screen's top edge, as on a Mac and with every engine. When the bar slides in over it, the window
+// stays and its title bar slides down the bar's height with the bar, in lockstep (0.25 s, the bar's own curve), over the app's top strip, and back
+// when the bar hides: BarAutoHide.h MSBDBarAHTitleSlide, the rule of the other engines' step (DMStatusBarMoveWindows). A title bar of a window card
+// on the iPad's screen only (a TV keeps its bar's room: nothing is up there), shown, not scaled in the App Switcher (it takes no touch there), not
+// full screen (it has none), not mid-drag. Its touches follow its frame: the card's hit test, DMSMTitleBarAt, the resize edges read the bar's own frame.
+static BOOL DMAutoHideSMBarDragged(UIView *bar) {   // (its drag in progress: -dm_pan:'s recogniser began)
+    for (UIGestureRecognizer *g in bar.gestureRecognizers)
+        if ([g isKindOfClass:[UIPanGestureRecognizer class]] && (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged)) return YES;
+    return NO;
+}
+// The bar shows (h: its height) or hides: every title bar to its place, sliding in lockstep with the bar.
+static void DMAutoHideSMSlideBars(BOOL show, CGFloat h, BOOL animated) {
+    gSMSlideBarH = show && DMSMFree() && h > 0 ? h : 0.0;
+    if (!gSMBars.count) return;
+    NSUInteger n = 0;
+    for (DMSMTitleBar *bar in gSMBars.allObjects) {
+        UIView *card = DMAutoHideSMCardOf(bar);   // (its card as its layout knows it: the bar is in the card's inner clipping view, not the card itself)
+        if (!card || bar.hidden) continue;
+        CGRect f = DMSMBarFrameNow(card, bar);
+        if (fabs(f.origin.y - bar.frame.origin.y) < 0.25) continue;
+        void (^apply)(void) = ^{ bar.frame = f; };
+        if (animated) [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut animations:apply completion:nil];
+        else [UIView performWithoutAnimation:apply];
+        n++;
+    }
+    if (!n) return;
+    DM_FEATURE_MARK("sm-autohide-title-slide");
+    DMLog([NSString stringWithFormat:@"[autohide] Stage Manager: %lu title bars %@", (unsigned long)n, gSMSlideBarH > 0 ? @"slid down with the bar" : @"slid back up"]);
+}
+// A drag that starts on a title bar slid down with the bar: the slide goes (no slide while its drag goes on) and the window moves down by it, under the
+// finger, then the drag as always -- as the other engines' DMAutoHideBake. -dm_pan: adds what this returns to the drag's travel (0: no slide).
+static CGFloat DMAutoHideSMBake(UIView *v) {
+    if (![v isKindOfClass:[DMSMTitleBar class]]) return 0.0;
+    DMSMTitleBar *bar = (DMSMTitleBar *)v;
+    CGFloat s = DMAutoHideSMSlideDrawn(bar);
+    if (!(s > 0)) return 0.0;
+    [bar.layer removeAnimationForKey:@"position"];
+    [UIView performWithoutAnimation:^{ bar.frame = DMSMBarFrame(bar.card); }];
+    DMLog([NSString stringWithFormat:@"[autohide] %@: moved down to its title bar (a drag started on it)", DMSMKeyText(bar.key ?: bar.bundle)]);
+    return s;
 }
 __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked);   // (SMDesktop.h: SpringBoard's own transitions with roles set)
 static void DMSMRepairRoles(id ctx);   // (SMLimit.h: one window, one role -- a window never in two roles of one layout state)
@@ -48129,22 +48491,34 @@ static CGRect DMSMContainerBoundsOf(id attrs) {
 }
 // 1.8.7 (Menu Bar Size per display, R6): Stage Manager's stage top is one value for every display -- -[SBSwitcherChamoisSettings _statusBarHeight],
 // which we answer with the iPad's bar (and our title bar) -- so a TV whose bar is another size had its windows' tops under its bar (taller) or a band
-// of wallpaper above them (shorter). A pass for a TV's container (DMSMScreenOfSize) whose top is that answer gets the TV's own: Stage Manager's own
+// of wallpaper above them (shorter). A pass for a TV's container (DMSMScreenOfSize) whose top is our answer gets the TV's own: Stage Manager's own
 // status bar height raised to the TV's bar (DMTVBarHeight), our title bar under it -- as the iPad's is. Any other top (not ours) is left as it is.
-static CGFloat gSMStatusBarOrigH = -1, gSMStatusBarAnswer = -1;   // (Stage Manager's own status bar height and our answer to it: the _statusBarHeight hook)
+// 1.8.8.4 (engine parity): the answer is the screen's top edge (and our title bar) while the iPad's bar hides itself, so a TV's pass carrying it keeps
+// its own bar's room still (also at the iPad's bar size: the room as before), and the iPad's own pass made from layout attributes of before the switch
+// gets the top for now -- either answer is ours, the one without the bar's room once it was given (BarAutoHide.h MSBDBarAHPassTop).
+static CGFloat gSMStatusBarOrigH = -1, gSMStatusBarAnswer = -1, gSMStatusBarTitle = 0;   // (Stage Manager's own status bar height, our answer to it, its title bar part: the _statusBarHeight hook)
+static BOOL gSMStatusBarLowered = NO;   // (the answer without the bar's room was given since the start: the bar hid itself with our engine)
 static CGRect DMSMStageTopByDisplay(CGRect r, CGRect b) {
     UIScreen *s = DMSMScreenOfSize(b.size);
-    if (!s || s == [UIScreen mainScreen] || !(gSMStatusBarAnswer > 0)) return r;
-    if (DMTVBarSizeNow() == gDMBarSize) return r;   // (the same size as the iPad's: Stage Manager's top as before -- a Home-button iPad's 20 pt bar against the TV's 24 pt base moved every TV top 4 pt with no setting touched, review of 1.8.7)
-    if (fabs(CGRectGetMinY(r) - CGRectGetMinY(b) - gSMStatusBarAnswer) > 0.5) {
+    if (!s || !(gSMStatusBarAnswer > 0) || !(gSMStatusBarOrigH >= 0)) return r;
+    BOOL tv = s != [UIScreen mainScreen];
+    CGFloat was = CGRectGetMinY(r) - CGRectGetMinY(b), bar = DMMenuBarHeight();
+    if (!MSBDBarAHIsOurTop(was, gSMStatusBarOrigH, bar, gSMStatusBarTitle, gSMStatusBarLowered)) {
         static CGFloat toldOther = -1;
-        if (fabs(toldOther - CGRectGetMinY(r)) > 0.25) { toldOther = CGRectGetMinY(r); DMLog([NSString stringWithFormat:@"[sm] a TV's stage top %.1f is not our answer %.1f: left as it is", CGRectGetMinY(r), gSMStatusBarAnswer]); }
+        if (tv && fabs(toldOther - CGRectGetMinY(r)) > 0.25) { toldOther = CGRectGetMinY(r); DMLog([NSString stringWithFormat:@"[sm] a TV's stage top %.1f is not our answer %.1f: left as it is", CGRectGetMinY(r), gSMStatusBarAnswer]); }
         return r;
     }
-    CGFloat top = CGRectGetMinY(b) + MAX(gSMStatusBarOrigH, DMTVBarHeight()) + (gSMStatusBarAnswer - MAX(gSMStatusBarOrigH, DMMenuBarHeight()));   // (the title bar's part as answered)
+    // (a TV whose bar is the iPad's size: the iPad's room, as before -- a Home-button iPad's 20 pt bar against the TV's 24 pt base moved every TV top
+    //  4 pt with no setting touched, review of 1.8.7)
+    CGFloat top = CGRectGetMinY(b) + MSBDBarAHPassTop(was, gSMStatusBarOrigH, bar, gSMStatusBarTitle, DMAutoHideLayout(), gSMStatusBarLowered, tv, DMTVBarSizeNow() == gDMBarSize, DMTVBarHeight());
     if (fabs(top - CGRectGetMinY(r)) < 0.25) return r;
-    static CGFloat told = -1;
-    if (fabs(told - top) > 0.25) { told = top; DMLog([NSString stringWithFormat:@"[sm] a TV's stage top %.1f (its own bar %.1f), not the iPad's %.1f", top, DMTVBarHeight(), CGRectGetMinY(r)]); }
+    static CGFloat toldTV = -1, toldIPad = -1;
+    CGFloat *told = tv ? &toldTV : &toldIPad;
+    if (fabs(*told - top) > 0.25) {
+        *told = top;
+        if (tv) DMLog([NSString stringWithFormat:@"[sm] a TV's stage top %.1f (its own bar %.1f), not the iPad's %.1f", top, DMTVBarHeight(), CGRectGetMinY(r)]);
+        else DMLog([NSString stringWithFormat:@"[sm] the iPad's stage top %.1f, the bar %@ (the pass carried %.1f)", top, DMAutoHideLayout() ? @"hiding itself" : @"shown", CGRectGetMinY(r)]);
+    }
     return CGRectMake(CGRectGetMinX(r), top, CGRectGetWidth(r), MAX(100.0, CGRectGetMaxY(r) - top));
 }
 // Our engine's stage area, from Apple's (r) for a screen of `b` with this Dock height: one rule for both layout engines (iPadOS 16's
@@ -48165,7 +48539,7 @@ static CGRect DMSMOurStageArea(CGRect r, CGRect b, double dock, BOOL strip, BOOL
     // (a full-screen layout -- Apple gives it the whole screen -- is left exactly as Apple has it: 1.1.0 shortened it to end above the Dock too,
     //  and a full-screen Safari came up 648 pt tall with its top cut off, iPad 2 29 Sep 08:09)
     BOOL fullScreenLayout = CGRectEqualToRect(CGRectIntegral(r), CGRectIntegral(b));
-    if (DMSMFree() && !fullScreenLayout && !CGRectIsEmpty(r) && !CGRectIsEmpty(b)) r = DMSMStageTopByDisplay(r, b);   // (1.8.7: a TV's top under its own bar)
+    if (DMSMFree() && !fullScreenLayout && !CGRectIsEmpty(r) && !CGRectIsEmpty(b)) r = DMSMStageTopByDisplay(r, b);   // (1.8.7: a TV's top under its own bar; 1.8.8.4: the iPad's by its bar now)
     // (Settings > Dock > Position: with the Dock at a screen side the area reaches the bottom edge and keeps out of its strip, as DMUsableArea has it, for this
     //  screen in either turn; during a title-bar drag the whole width, as the bottom's rule: the window is put back at the drop, DMSMAttrsFitScreen)
     CGSize mainSize = [UIScreen mainScreen].bounds.size;
@@ -48404,13 +48778,20 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 }
 %end
 %hook SBSwitcherChamoisSettings
-// the stage starts below the menu bar -- our bar's height, kept while the bar hides itself (iOS's then reads less) -- and our title bar under it.
+// the stage starts below the menu bar -- iOS's status bar height raised to our bar's -- and our title bar under it; while the bar hides itself (auto-hide
+// on and a pointer attached) at the screen's top edge, as every engine's windows then reach it (1.8.8.4, engine parity: BarAutoHide.h MSBDBarAHSMStageTop;
+// it was the bar's room kept, so our windows stopped 24 pt lower than Aerial's, Zetsu's and MilkyWay4's). 18.5 asks it each time it makes a window
+// scene's layout attributes (-layoutAttributesForWindowScene:..., the stage area's padding and the size grid); a pass made from older ones has its top
+// put right by DMSMStageTopByDisplay.
 // (1.7.1 item 14: this was at least 24, so on a Home-button iPad, whose bar is 20 pt, every window stood 4 pt below the bar)
 - (CGFloat)_statusBarHeight {
     CGFloat h = %orig;
     static BOOL logged; if (!logged) { logged = YES; DMLog([NSString stringWithFormat:@"[smengine] Stage Manager's status bar height %.1f", h]); }
-    CGFloat a = DMSMEngine() ? MAX(h, DMMenuBarHeight()) + (DMTestFlag("/tmp/msb-sm-nochrome") ? 0.0 : kSMBarH) : h;   // (+ our title bar above each window)
-    gSMStatusBarOrigH = h; gSMStatusBarAnswer = DMSMEngine() ? a : -1;   // (1.8.7: a TV's pass takes its own bar instead, DMSMStageTopByDisplay)
+    BOOL ours = DMSMEngine(), hides = ours && DMAutoHideLayout();
+    CGFloat title = DMTestFlag("/tmp/msb-sm-nochrome") ? 0.0 : kSMBarH;   // (our title bar above each window)
+    CGFloat a = ours ? MSBDBarAHSMStageTop(h, DMMenuBarHeight(), title, hides) : h;
+    gSMStatusBarOrigH = h; gSMStatusBarAnswer = ours ? a : -1; gSMStatusBarTitle = title;   // (a pass's top by display: DMSMStageTopByDisplay)
+    if (hides && !gSMStatusBarLowered) { gSMStatusBarLowered = YES; DM_FEATURE_MARK("sm-autohide-stage-top"); DMLog([NSString stringWithFormat:@"[smengine] the menu bar hides itself: Stage Manager's stage top %.1f (the screen's top edge and our title bar)", a]); }
     return a;
 }
 // no recent-stages strip on the left: like a Mac, other apps are in the Dock (minimized windows too)
@@ -48608,7 +48989,9 @@ static NSArray<NSArray *> *DMSMPastEdgeBefore16(id m, CGRect area) {
     for (id it in list) {
         CGSize s = ((CGSize (*)(id, SEL, id))objc_msgSend)(m, sizeS, it);
         CGPoint c = ((CGPoint (*)(id, SEL, id))objc_msgSend)(m, centerS, it), k = c;
-        if (!isfinite(c.x) || !isfinite(c.y) || c.y - s.height / 2.0 < CGRectGetMinY(area) - 0.5 || !DMSMPastEdgeHeldAt(c, s, cb.size, &k)) continue;
+        // (its top as kept under the area's top: one recorded at the top edge while the menu bar hid itself is kept under the bar again, past its edge
+        //  still -- 1.8.8.4; a window whose kept top is above the area is clamped as before)
+        if (!isfinite(c.x) || !isfinite(c.y) || !DMSMPastEdgeHeldAt(c, s, cb.size, &k) || k.y - s.height / 2.0 < CGRectGetMinY(area) - 0.5) continue;
         if (!held) held = [NSMutableArray array];
         [held addObject:@[it, [NSValue valueWithCGPoint:k]]];
     }
@@ -48821,6 +49204,98 @@ static void DMSMRefitOldTopTick(void) {
     DMLog([NSString stringWithFormat:@"[menubar] Stage Manager: %lu window(s) on screen and %d in other stages re-fitted under the bar", (unsigned long)shown.count, hidden]);
     if (!shown.count && !hidden) { DMRefitTopDone(2); DMSMNoteStagesBar(); return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMSaveStages(); DMRefitTopDone(2); DMSMNoteStagesBar(); });   // (the requests' transitions over)
+}
+// 1.8.8.4 (engine parity, item 5): our Stage Manager engine's windows at the top when the menu bar starts or stops hiding itself (the setting, a pointer
+// attached or detached), as Aerial's, Zetsu's and MilkyWay4's (DMAutoHideRetopAll) -- one rule, BarAutoHide.h MSBDBarAHRetop: a window at the bar's line
+// goes up to the screen's top edge, a full-height one growing; taken back, one in the bar's room goes under the bar, a full-height one shrinking. The
+// iPad's stage on screen, as theirs is the current desktop's windows: at the switch, then once a second while auto-hide is active (a respring's restore,
+// a stage brought back: another desktop's windows are caught as it comes back, as theirs), in one request (DMSMApplyPlacesMarkedIn, each window kept the
+// user's: its behind-the-Dock mark, 17+'s placed-by-user), at most 4 moves per window and mode. Taken back, each window is also fitted as every request
+// of ours fits it (DMSMAttrsFitScreen): Stage Manager's own pass may have moved it down whole first (its stage area is under the bar from the switch
+// on), a full-height one then 24 pt past the Dock's line and no longer in the bar's room. Fit to Window's tiles are Fit's own (laid out again at the
+// switch, DMAutoHideTick). Not while a transition, a turn, the App Switcher, a desktop switch, Spotlight, a drag, a window growing from the Dock, the
+// Lock Screen, our menus or the start's restore are in flight: a switch waits on the 0.1 s tick, which runs on while one waits (DMAutoHideRefreshTimer).
+static CGRect DMAutoHideSMWindowFrame(id attrs, NSString *key, CGSize scr, BOOL onScreen) {   // (the whole window by its attributes, as DMSMAttrsRefitTop measures it)
+    if (!DMSMIsAttrs(attrs) || DMSMAttrsFullScreen(attrs) || scr.width < 1.0 || scr.height < 1.0) return CGRectNull;
+    DMSMAttributedSize sz; CGPoint c;
+    if (!DMSMAttrAttributedSize(attrs, &sz) || !DMSMAttrCenter(attrs, &c) || !isfinite(c.x) || !isfinite(c.y)) return CGRectNull;
+    CGSize pts = DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, sz.type, scr);
+    if ((pts.width <= 0 || pts.height <= 0) && onScreen && key) {   // (a size Stage Manager works out itself: its card's, on screen)
+        UIView *card = DMSMCardFor(key);
+        if (card.window && !DMSMCardIsFullSize(card)) pts = card.bounds.size;
+    }
+    if (!(pts.width > 0) || !(pts.height > 0)) return CGRectNull;
+    return CGRectMake(c.x * scr.width - pts.width / 2.0, c.y * scr.height - pts.height / 2.0 - kSMBarH, pts.width, pts.height + kSMBarH);
+}
+// A window of the stage `m` where the rule would move one while the bar's room is given (at the bar's line), not left alone after its 4 tries: the once-
+// a-second pass reads no more of SpringBoard than the stage without one (review of 1.8.8.4: it read the desktop -- whose Dock is measured from the Dock
+// window's views, DMUsableArea -- and Fill every second while the bar hid itself, with nothing to move).
+static BOOL DMAutoHideSMAnyAtLine(NSDictionary *m) {
+    CGSize scr = [UIScreen mainScreen].bounds.size; CGFloat bar = DMMenuBarHeight();
+    for (id it in m) {
+        NSString *k = DMSMItemKey(it);
+        if (!k.length || [gSMRetopTries[k] intValue] >= 4) continue;
+        CGRect was = DMAutoHideSMWindowFrame(m[it], k, scr, YES);
+        double y = was.origin.y, h = was.size.height;   // (no bottom: whether it moves at all, not how tall it ends)
+        if (!CGRectIsNull(was) && MSBDBarAHRetop(&y, &h, NAN, bar, YES, NO)) return YES;
+    }
+    return NO;
+}
+static CFTimeInterval gSMRetopAt = 0;
+static void DMAutoHideSMRetop(BOOL layout, BOOL active, BOOL modeChanged) {
+    static BOOL atHome = NO;   // (a switch waiting at the Home Screen: looked at once a second, not on every tick)
+    if (modeChanged) { gSMRetopTries = nil; gSMRetopPending = layout ? 1 : 0; atHome = NO; }
+    if (gSMRetopPending < 0 && !(layout && active)) return;   // (nothing to do: auto-hide not active and no switch waiting -- nothing at rest)
+    if (!DMSMFree()) { gSMRetopPending = -1; return; }
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL atSwitch = gSMRetopPending >= 0;
+    if ((!atSwitch || atHome) && now - gSMRetopAt < 1.0) return;
+    if (gDMScreenOff || !gSMRestoreDone || DMSMHomeUILocked() || DMCoverSheetShown() || gOverlay || gSMGrowing.count || DMSMWorkspaceBusy() || DMSMTurnSettling()
+        || DMSwitcherVisible() || gMSWSwitching || DMSMSpotlightHolds() || now < gSMDragUntil) return;   // (the next tick)
+    gSMRetopAt = now;
+    BOOL give = atSwitch ? gSMRetopPending == 1 : YES;
+    gSMRetopPending = -1;
+    id shown = DMSMIPadStageShown();   // (the Home Screen: none -- a switch waits for the stage to be shown again)
+    atHome = !shown && atSwitch;
+    if (!shown) { if (atSwitch) gSMRetopPending = give ? 1 : 0; return; }
+    if (!DMSMIsMainIdentity(DMSMStageDisplayIdentity(shown))) return;   // (a TV's: its bar's room is kept)
+    NSDictionary *m = DMSMStageItemsMap(shown);
+    if (!atSwitch && !DMAutoHideSMAnyAtLine(m)) return;   // (once a second: nothing at the bar's line, nothing more read)
+    CGSize scr = CGSizeZero;
+    CGRect u = DMSMUsableAreaForIdentity(nil, &scr);
+    if (scr.width < 1.0 || scr.height < 1.0 || CGRectIsEmpty(u) || CGRectIsNull(u)) return;
+    CGRect fill = DMSMLayoutFrameIn(@"fill", u, scr);   // (where a full-height window ends: Fill's bottom, as the other engines read it)
+    CGFloat bottom = CGRectIsNull(fill) || CGRectIsEmpty(fill) ? CGRectGetMaxY(u) : CGRectGetMaxY(fill), bar = DMMenuBarHeight();
+    BOOL tiled = DMFitEnabled() && gSMFitSlots.count >= 2;
+    NSMutableDictionary<NSString *, NSValue *> *places = [NSMutableDictionary dictionary];
+    for (id it in m) {
+        NSString *k = DMSMItemKey(it);
+        if (!k.length || (tiled && DMSMKeyLookup(gSMFitSlots, k))) continue;   // (a Fit tile: Fit's own)
+        int tries = [gSMRetopTries[k] intValue];
+        if (tries >= 4) continue;   // (Stage Manager keeps putting it back: left alone)
+        CGRect was = DMAutoHideSMWindowFrame(m[it], k, scr, YES);
+        if (CGRectIsNull(was)) continue;
+        double y = was.origin.y, h = was.size.height;
+        BOOL moved = MSBDBarAHRetop(&y, &h, bottom, bar, give, NO);
+        CGRect f = moved ? CGRectMake(was.origin.x, y, was.size.width, h) : was;
+        if (moved) DMSMPastEdgeMoved(was, f, scr);   // (let go past an edge: it stays there, at its new top)
+        if (!give) {   // (taken back: as our requests fit it, whatever Stage Manager's own pass did first)
+            id a = moved ? DMSMAttrsForFrameIn(m[it], f, shown) : m[it];
+            id fa = a ? DMSMAttrsFitScreen(a, nil, DMSMKeySetHas(gSMBehindDock, k), DMSMKeyText(k)) : nil;
+            CGRect g = fa ? DMAutoHideSMWindowFrame(fa, k, scr, YES) : CGRectNull;
+            if (!CGRectIsNull(g)) f = g;
+        }
+        if (fabs(f.origin.x - was.origin.x) < 0.5 && fabs(f.origin.y - was.origin.y) < 0.5 && fabs(f.size.width - was.size.width) < 0.5 && fabs(f.size.height - was.size.height) < 0.5) continue;
+        if (!gSMRetopTries) gSMRetopTries = [NSMutableDictionary dictionary];
+        gSMRetopTries[k] = @(tries + 1);
+        places[k] = [NSValue valueWithCGRect:f];
+    }
+    if (!places.count) return;
+    BOOL asked = DMSMApplyPlacesMarkedIn(places, shown, [NSSet setWithArray:places.allKeys]);
+    DM_FEATURE_MARK("sm-autohide-retop");
+    NSMutableArray *names = [NSMutableArray array]; for (NSString *k in places) [names addObject:DMSMKeyText(k)];
+    DMLog([NSString stringWithFormat:@"[autohide] Stage Manager: %lu window(s) %@%@ (%@)", (unsigned long)places.count, give ? @"up to the top edge" : @"back under the bar",
+        asked ? @"" : @" NOT asked for", [names componentsJoinedByString:@", "]]);
 }
 #include "SMGestureHook.h"   // (the switcher gesture's transaction, for SMGestureHold.h: 1.4.5, issue #7)
 #include "SMAfterHome.h"     // (the desktop's last window leaves the App Switcher once the Home transition is over: 1.5.2, the black ghost cards)

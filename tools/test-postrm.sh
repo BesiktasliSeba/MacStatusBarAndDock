@@ -1,13 +1,17 @@
 #!/bin/bash
-# test-postrm.sh: runs layout/DEBIAN/postrm on the Mac with /var/jb and /var/mobile pointing into a scratch folder, and checks what it removes and
-# what it keeps; then the prerm the same way, with stand-ins for launchctl and the helpers, for what it stops and in which order (the Charge
+# test-postrm.sh: runs layout/DEBIAN/postrm on the Mac with every path it names in a scratch folder (tools/scratch-root.sh: /var/jb and
+# /var/mobile are real on an iPad's test lane), and checks what it removes and what it keeps (the sticky notes: on purge only); then the prerm the same way, with stand-ins for launchctl and the helpers, for what it stops and in which order (the Charge
 # Limit's job unloaded first, then charging handed back to iPadOS with msbdcharge --reset, on removal and on an upgrade alike).
 set -u
 cd "$(dirname "$0")/.."
 W=$(mktemp -d "${TMPDIR:-/tmp}/msbd-postrm.XXXXXX")
 trap 'rm -rf "$W"' EXIT
 J="$W/root/var/jb"; M="$W/root/var/mobile"
-sed -e "s#/var/jb#$J#g" -e "s#/var/mobile/Library/Caches#$M/Library/Caches#g" -e "s#/var/mobile/Library/ControlCenter#$M/Library/ControlCenter#g" layout/DEBIAN/postrm > "$W/postrm"; chmod +x "$W/postrm"
+# (every absolute path the script names goes under $W/root, checked: tools/scratch-root.sh -- on an iPad's test lane /var/jb and /var/mobile are real;
+#  before, the purge's "/var/mobile/Library/Application Support/MacStatusBarAndDock", the owner's sticky notes, was left as it was)
+. tools/scratch-root.sh
+left=$(scratch_copy layout/DEBIAN/postrm "$W/root" "$W/postrm") || { echo "FAIL  the postrm copy still names real paths (never run): $left"; exit 1; }
+NOTES="$M/Library/Application Support/MacStatusBarAndDock"   # (a path with a space: kept apart from the word lists below)
 S="$J/var/lib/sshtoggled-engines"; P="$J/var/mobile/Library/Preferences"
 GONE="$S/msb-off-restored $S/msb-off-alert $S/msb-config $S/ssh-state $S/.ssh-state.Ab12Cd $S/eject-answer $S/.eject-answer.Xy34Zw $S/eject-dryrun
 $S/tailspin.plist $S/sleepguard.plist $J/var/log/msbd-sleepguard.log $J/var/log/msbd-sleepguard.log.old
@@ -25,6 +29,7 @@ $J/var/log/other.log $M/Library/Caches/other.plist"
 setup() {
     rm -rf "$W/root"
     for f in $GONE $KEPT; do mkdir -p "$(dirname "$f")"; echo x > "$f"; done
+    mkdir -p "$NOTES"; echo x > "$NOTES/StickyNotes.plist"
 }
 # (1.8.7.5, audit L16 and L17 of 1.8.7.2: every diagnostic record, by the names common/Diag.h writes, and the iCleaner panel's answer, its
 #  temporary files and the debug test switch -- with them left, the helper's folder stayed; another tweak's file of a similar name stays)
@@ -50,15 +55,18 @@ for action in remove purge; do
         [ -e "$f" ] || lost="$lost ${f#$W/root}"
     done
     [ -z "$lost" ] && ok "$action: settings and other files kept" || bad "$action: removed too much:$lost"
+    # (the sticky notes are the user's own writing: kept on removal, deleted on purge only -- statusbar/DesktopNotes.h)
+    if [ "$action" = purge ]; then [ ! -e "$NOTES" ] && ok "purge: the sticky notes' folder removed (in the scratch root)" || bad "purge: the sticky notes' folder stays"
+    else [ -f "$NOTES/StickyNotes.plist" ] && ok "remove: the sticky notes kept" || bad "remove: the sticky notes were removed"; fi
 done
 setup; "$W/postrm" purge; [ ! -e "$J/var/lib/macstatusbaranddock" ] && ok "purge: migration record removed" || bad "purge: migration record kept"
 setup; echo Aerial > "$S/renamed"; "$W/postrm" remove
 [ -f "$S/renamed" ] && ok "remove: a record of engines still renamed is kept (folder stays)" || bad "remove: the renamed record was lost"
-setup; "$W/postrm" upgrade 1.0.1; [ -e "$S/ssh-state" ] && [ -e "$P/MacStatusBarAndDock-CrashRecord.txt" ] && [ -e "$S/iclean-answer" ] && [ -e "$P/MacStatusBarAndDock-Diag-StatusBar.txt" ] && ok "upgrade: nothing removed" || bad "upgrade removed files"
+setup; "$W/postrm" upgrade 1.0.1; [ -e "$S/ssh-state" ] && [ -e "$P/MacStatusBarAndDock-CrashRecord.txt" ] && [ -e "$S/iclean-answer" ] && [ -e "$P/MacStatusBarAndDock-Diag-StatusBar.txt" ] && [ -f "$NOTES/StickyNotes.plist" ] && ok "upgrade: nothing removed" || bad "upgrade removed files"
 setup; "$W/postrm" abort-install; [ -e "$S/ssh-state" ] && [ -e "$S/iclean-answer" ] && [ -e "$P/MacStatusBarAndDock-Diag-Finder.txt" ] && ok "abort-install: nothing removed" || bad "abort-install removed files"
 # the prerm
 X="$W/prerm-root/var/jb"; mkdir -p "$X/usr/bin" "$X/usr/libexec"
-sed "s#/var/jb#$X#g" layout/DEBIAN/prerm > "$W/prerm"; chmod +x "$W/prerm"
+left=$(scratch_copy layout/DEBIAN/prerm "$W/prerm-root" "$W/prerm") || { echo "FAIL  the prerm copy still names real paths (never run): $left"; exit 1; }
 for t in usr/bin/launchctl usr/libexec/sshtoggled usr/libexec/msbdcharge; do printf '#!/bin/sh\necho "%s $*" >> "%s"\n' "${t##*/}" "$W/prerm-calls" > "$X/$t"; chmod +x "$X/$t"; done
 order() { awk -v a="$1" -v b="$2" 'index($0, a) && !x {x=NR} index($0, b) && !y {y=NR} END{exit !(x && y && x < y)}' "$W/prerm-calls"; }
 for action in remove upgrade; do

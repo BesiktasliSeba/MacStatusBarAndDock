@@ -20,7 +20,9 @@
 #if DEBUG
 // Test builds only: /tmp/msb-fakeversion holding a major number (e.g. 17) makes the tweak act as on that version. Sandboxed processes cannot read
 // /tmp, so SpringBoard's loader passes the number on in this state.
+#ifndef MSBD_GATE_FAKE_STATE   // (the Mac tests name their own: on an iPad's test lane the state would be the iPad's, which its debug build reads)
 #define MSBD_GATE_FAKE_STATE "com.besiktasliseba.macstatusbaranddock.fakeversion"
+#endif
 static inline int MSBDFakeMajorFile(void) {
     FILE *f = fopen("/tmp/msb-fakeversion", "r");
     int m = 0;

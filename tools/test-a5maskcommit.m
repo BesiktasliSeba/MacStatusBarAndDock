@@ -13,6 +13,12 @@
 //    post-commit handler reads what the commit carried (the holder's and the mask's model sizes, and whether the mask has a bounds animation).
 // T16-T21 (1.8.8, H2 row 3 on Aerial 5.1, p07 on the M1): the same cut code with our minimize, H2's DMFitPlaceAway and the Dock icon's show
 // played as built (Minimize, PlaceAway, ShowFromDock below): the fit-pass answer counts only the put-backs it makes.
+// Since 1.8.8.4 (plans/efficiency.md) the app's picture in the holder is clipped to the corners by its own layer and the holder carries no
+// mask; a holder with no picture yet or with two (a window brought back by a respring shows its app through two scene host views) keeps the
+// mask. Every case runs twice: the windows with their app's picture (the clip: it must be committed at the holder's bounds, clipped and filled,
+// with no mask), and with argument "twopictures" with two (the mask, as before). T22-T24 (1.8.8.4 review): Aerial's own layout pass, after our
+// observer, lays the picture out past the holder's bottom (its trim crops the app that way), puts a second picture in, or fills the holder again:
+// the commit that draws it carries the mask (the fill taken off for the clip), never the clip on a picture that is no longer the mask's shape.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -24,6 +30,8 @@ static NSMutableArray<NSString *> *gLog;
 static void DMLog(NSString *s) { if (!gLog) gLog = [NSMutableArray array]; [gLog addObject:s]; }
 static BOOL gKill __attribute__((unused)), gTrace __attribute__((unused));   // (/tmp/msb-a5-maskold, /tmp/msb-a5-masktrace)
 #define DMTestFlag(path) ((gKill && !strcmp((path), "/tmp/msb-a5-maskold")) || (gTrace && !strcmp((path), "/tmp/msb-a5-masktrace")))
+static UIUserInterfaceStyle DMSystemInterfaceStyle(void) { return UIUserInterfaceStyleDark; }
+static BOOL gTwoPictures;   // (argument "twopictures": two scene host views in each holder, as a window brought back by a respring: the mask)
 static BOOL gGeom = YES;   // (Aerial 5.x our engine, themed)
 static BOOL DMA5MacGeometry(void) { return gGeom; }
 static CGSize gScreen = {1194, 834};
@@ -80,9 +88,23 @@ static void Check(BOOL ok, NSString *what) { gChecks++; if (!ok) gFails++; print
 @interface TStage : UIView   // (Aerial's stage: its app holder autoresizes; relayout: Aerial lays the holder out in the stage's own layout pass)
 @property (nonatomic, strong) UIView *holder;
 @property (nonatomic) CGFloat relayout;
+@property (nonatomic) int picLayout;   // (the next layout pass only: 1 the picture past the holder's bottom, 2 a second picture, 3 the holder filled)
 @end
 @implementation TStage
-- (void)layoutSubviews { [super layoutSubviews]; if (self.relayout) self.holder.frame = CGRectMake(6, 13, self.bounds.size.width - 12 - self.relayout, self.bounds.size.height - 25); }
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (self.relayout) {
+        self.holder.frame = CGRectMake(6, 13, self.bounds.size.width - 12 - self.relayout, self.bounds.size.height - 25);
+        // (Aerial lays the app's picture out at the holder's bounds in the same pass: on iPadOS 15.6.1 a window's one picture is exactly at its holder's
+        //  bounds, 711.4 pt tall at Fill; autoresizing alone puts it on the pixel grid, 0.4 pt short here, and the commit pass gives that the mask)
+        for (UIView *v in self.holder.subviews) if ([v isKindOfClass:[TSceneLayerHost class]]) v.frame = self.holder.bounds;
+    }
+    int k = self.picLayout; self.picLayout = 0;
+    CGSize hb = self.holder.bounds.size;
+    if (k == 1) for (UIView *v in self.holder.subviews) if ([v isKindOfClass:[TSceneLayerHost class]]) { v.autoresizingMask = 0; v.frame = CGRectMake(0, 0, hb.width, hb.height + 20.0); break; }
+    if (k == 2) { TSceneLayerHost *h = [[TSceneLayerHost alloc] initWithFrame:self.holder.bounds]; h.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; [self.holder addSubview:h]; }
+    if (k == 3) self.holder.backgroundColor = [UIColor whiteColor];
+}
 @end
 static UIWindow *gWindow;
 static TStage *MakeStage(CGRect f, NSString *name) {
@@ -90,7 +112,12 @@ static TStage *MakeStage(CGRect f, NSString *name) {
     st.accessibilityIdentifier = name;
     UIView *h = [[UIView alloc] initWithFrame:CGRectMake(6, 13, f.size.width - 12, f.size.height - 25)];
     h.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [h addSubview:[[TSceneLayerHost alloc] initWithFrame:h.bounds]];
+    h.backgroundColor = [UIColor blackColor];   // (theme step 4's fill)
+    for (int i = 0; i < (gTwoPictures ? 2 : 1); i++) {   // (the app's picture, laid out at the holder's bounds; twice for a window brought back by a respring)
+        TSceneLayerHost *host = [[TSceneLayerHost alloc] initWithFrame:h.bounds];
+        host.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [h addSubview:host];
+    }
     [st addSubview:h]; st.holder = h;
     [gWindow addSubview:st];
     objc_setAssociatedObject(st, kStageIntentKey, [NSValue valueWithCGRect:f], OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (its place: DMSetStageIntent)
@@ -105,8 +132,15 @@ static void Reset(CGSize screen) {
     gWatcherPaused = YES; gGeom = YES; gKill = NO; gTrace = NO; [gLog removeAllObjects];
 }
 static CALayer *MaskOf(TStage *st) { return objc_getAssociatedObject(st.holder, kA5MaskKey); }
-// What a commit carried, read after it (a post-commit handler): the holder's and the mask's sizes, and whether the mask got a bounds animation.
-typedef struct { CGSize holder, mask; BOOL hasMask, maskAnimated; double holderAnim, maskAnim; CGRect frame; } TCommitted;
+// What a commit carried, read after it (a post-commit handler): the holder's and the mask's sizes, and whether the mask got a bounds animation;
+// the app's picture: its frame, and whether it is clipped to the corners and filled (the holder then has no fill).
+typedef struct { CGSize holder, mask; BOOL hasMask, maskAnimated; double holderAnim, maskAnim; CGRect frame; BOOL picture, clipped, holderFill; CGRect pictureFrame; int pictures; } TCommitted;
+static UIView *PictureOf(TStage *st) { for (UIView *v in st.holder.subviews) if ([v isKindOfClass:[TSceneLayerHost class]]) return v; return nil; }
+static BOOL PictureClipped(UIView *v) {
+    CALayer *l = v.layer;
+    return v && l.masksToBounds && l.maskedCorners == (kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner) && fabs(l.cornerRadius - 12.0) < 0.01 && [l.cornerCurve isEqualToString:kCACornerCurveContinuous]
+        && l.backgroundColor && CGColorEqualToColor(l.backgroundColor, [UIColor blackColor].CGColor);
+}
 static int gPhase1Adds;
 static void (*gOrigAdd)(id, SEL, id, int);
 static void TCountAdd(id cls, SEL sel, id block, int phase) { if (phase == 1) gPhase1Adds++; gOrigAdd(cls, sel, block, phase); }
@@ -127,17 +161,29 @@ static TCommitted Turn(TStage *st, BOOL observer, void (^during)(void)) {
         CALayer *m = MaskOf(st);
         c.holder = st.holder.layer.bounds.size; c.hasMask = m != nil && st.holder.layer.mask == m; c.mask = m.bounds.size;
         c.holderAnim = AnimDur(st.holder.layer); c.maskAnim = AnimDur(m); c.maskAnimated = c.maskAnim > 0; c.frame = st.frame;
+        UIView *pic = PictureOf(st); c.clipped = PictureClipped(pic); c.holderFill = st.holder.layer.backgroundColor != NULL; c.pictureFrame = pic.frame;
+        for (UIView *v in st.holder.subviews) if ([v isKindOfClass:[TSceneLayerHost class]]) c.pictures++;
+        c.picture = c.pictures == 1;   // (one picture: the clip's case; none or two: the mask's)
     } forPhase:2];
     [CATransaction commit]; [CATransaction flush];
     return c;
 }
+static BOOL PictureAtHolder(TCommitted c) { return fabs(c.pictureFrame.size.width - c.holder.width) <= 0.5 && fabs(c.pictureFrame.size.height - c.holder.height) <= 0.5 && fabs(c.pictureFrame.origin.x) <= 0.5 && fabs(c.pictureFrame.origin.y) <= 0.5; }
 static NSString *Band(TCommitted c) {
+    if (c.picture) {   // (the clip: the app's picture rounds itself at its own bounds, which must be the holder's)
+        if (c.hasMask) return [NSString stringWithFormat:@"holder %.1f x %.1f, our mask still on it (%.1f x %.1f) with the app's picture in", c.holder.width, c.holder.height, c.mask.width, c.mask.height];
+        return [NSString stringWithFormat:@"holder %.1f x %.1f, the picture %.1f x %.1f %@%@", c.holder.width, c.holder.height, c.pictureFrame.size.width, c.pictureFrame.size.height,
+                c.clipped ? @"clipped and filled" : @"NOT clipped or filled", c.holderFill ? @", the holder still filled" : @""];
+    }
     if (!c.hasMask) return @"no mask of ours";
     double dw = c.holder.width - c.mask.width, dh = c.holder.height - c.mask.height;
     if (fabs(dw) <= 0.5 && fabs(dh) <= 0.5) return [NSString stringWithFormat:@"holder %.1f x %.1f, mask the same", c.holder.width, c.holder.height];
     return [NSString stringWithFormat:@"holder %.1f x %.1f, mask %.1f x %.1f (band %.1f x %.1f pt)", c.holder.width, c.holder.height, c.mask.width, c.mask.height, dw, dh];
 }
-static BOOL NoBand(TCommitted c) { return c.hasMask && fabs(c.holder.width - c.mask.width) <= 0.5 && fabs(c.holder.height - c.mask.height) <= 0.5; }
+static BOOL NoBand(TCommitted c) {
+    if (c.picture) return !c.hasMask && c.clipped && !c.holderFill && PictureAtHolder(c);
+    return c.hasMask && fabs(c.holder.width - c.mask.width) <= 0.5 && fabs(c.holder.height - c.mask.height) <= 0.5;
+}
 static void Settle(TStage *st) { Turn(st, YES, nil); Turn(st, YES, ^{ WatcherTick(); }); }   // (the mask made and in step, as at rest)
 static void AerialPass(TStage *st) { st.frame = MSBDA5FitOf(st.frame, gScreen); }   // (its fit-to-screen pass: the holder resizes with the stage at once)
 // 1.8.8 H2 row 3: our minimize as it ends (DMMinimizeStage: hidden, our key), H2's DMFitPlaceAway (the frame set at once, its intended place for
@@ -168,7 +214,9 @@ int main(int argc, char **argv) {
         gWindow = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 1194, 834)];
         id ctx = ((id (*)(id, SEL))objc_msgSend)(NSClassFromString(@"CAContext"), NSSelectorFromString(@"localContext"));
         ((void (*)(id, SEL, id))objc_msgSend)(ctx, NSSelectorFromString(@"setLayer:"), gWindow.layer);
-        const char *only = argc > 1 ? argv[1] : NULL;
+        const char *only = NULL;
+        for (int i = 1; i < argc; i++) { if (!strcmp(argv[i], "twopictures")) gTwoPictures = YES; else only = argv[i]; }
+        if (gTwoPictures) printf("-- two pictures in each holder (the mask)\n");
 #define CASE(name) if ((!only && strcmp(name, "T15")) || (only && !strcmp(only, name)))
         const CGRect kFillM1 = {{-6, 30}, {1206, 736.4}};
 
@@ -198,7 +246,7 @@ int main(int argc, char **argv) {
             int adds = gPhase1Adds;
             TCommitted c = Turn(st, YES, ^{ st.relayout = 100; [st setNeedsLayout]; });
             Check(NoBand(c), [NSString stringWithFormat:@"T4 the holder laid out again in the commit (the window needs layout at the observer): %@", Band(c)]);
-            Check(gPhase1Adds - adds == 1, [NSString stringWithFormat:@"T4 ... one pre-commit handler for it (%d)", gPhase1Adds - adds]);
+            Check(gPhase1Adds - adds == 1, [NSString stringWithFormat:@"T4 ... one pre-commit handler for it, a clipped window's too (its layout can move or add its app's picture: T22-T24): %d", gPhase1Adds - adds]);
             st.relayout = 0;
         }
         CASE("T5") {   // an animated Fit move with the watcher running: the mask moves with the holder in the same commit
@@ -207,6 +255,11 @@ int main(int argc, char **argv) {
             CGRect to = CGRectMake(-6, 30, 1206, 736.4);
             objc_setAssociatedObject(st, kStageIntentKey, [NSValue valueWithCGRect:to], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             TCommitted c = Turn(st, YES, ^{ [UIView animateWithDuration:0.3 animations:^{ st.frame = to; [st layoutIfNeeded]; }]; });
+            if (c.picture) {
+                double pa = AnimDur(PictureOf(st).layer);
+                Check(NoBand(c) && pa > 0 && fabs(pa - c.holderAnim) < 0.001, [NSString stringWithFormat:@"T5 an animated Fit move (0.3 s), watcher running: %@; the picture's bounds animation %.2f s, the holder's %.2f s",
+                      Band(c), pa, c.holderAnim]);
+            } else
             Check(NoBand(c) && c.maskAnimated && fabs(c.maskAnim - c.holderAnim) < 0.001, [NSString stringWithFormat:@"T5 an animated Fit move (0.3 s), watcher running: %@; the mask's bounds animation %.2f s, the holder's %.2f s",
                   Band(c), c.maskAnim, c.holderAnim]);
         }
@@ -235,7 +288,7 @@ int main(int argc, char **argv) {
             int adds = gPhase1Adds, mut = gA5FrameMutations;
             TCommitted c = Turn(st, YES, ^{ AerialPass(st); });
             Turn(st, YES, ^{ st.frame = CGRectMake(-6, 30, 900, 700); });
-            Check(!MaskOf(st) && !c.hasMask && gPhase1Adds == adds && gA5FrameMutations == mut, [NSString stringWithFormat:@"T8 not Aerial 5 (DMA5MacGeometry NO): %@, %d writes, %d handlers",
+            Check(!MaskOf(st) && !c.hasMask && !c.clipped && gPhase1Adds == adds && gA5FrameMutations == mut, [NSString stringWithFormat:@"T8 not Aerial 5 (DMA5MacGeometry NO): %@, %d writes, %d handlers",
                   Band(c), gA5FrameMutations - mut, gPhase1Adds - adds]);
         }
         CASE("T9") {   // a minimized window and one hidden for Aerial's round icon: left as the watcher left them
@@ -253,6 +306,8 @@ int main(int argc, char **argv) {
             TStage *st = MakeStage(kFillM1, @"T10"); Settle(st);
             TCommitted c = Turn(st, YES, ^{ AerialPass(st); });
 #if DEBUG
+            if (c.picture) Check(NoBand(c), [NSString stringWithFormat:@"T10 (debug) /tmp/msb-a5-maskold with the app's picture in: the clip has no order to undo: %@", Band(c)]);
+            else
             Check(!NoBand(c) && fabs(c.holder.width - c.mask.width - 52.0) < 0.5, [NSString stringWithFormat:@"T10 (debug) /tmp/msb-a5-maskold: 1.8.7.8's order back, KT's band: %@", Band(c)]);
 #else
             Check(NoBand(c), [NSString stringWithFormat:@"T10 (release) /tmp/msb-a5-maskold is no switch in a release: %@", Band(c)]);
@@ -366,6 +421,24 @@ int main(int argc, char **argv) {
             TCommitted c = Turn(st, YES, ^{ objc_setAssociatedObject(st, kStageEnteringKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); });
             Check(CGRectEqualToRect(c.frame, kFillM1) && NoBand(c) && LogCount(kPutBack) == 1, [NSString stringWithFormat:@"T21 ... landed: the next commit carries its place (%@)", NSStringFromCGRect(c.frame)]);
         }
+        // T22-T24 (1.8.8.4 review): Aerial's own layout pass, after our observer, changes what the clip depends on; the commit that draws it must
+        // carry the mask at the holder's size, the pictures unclipped and the fill on the holder (T24 with one picture: the clip, the fill taken off)
+        for (int k = 1; k <= 3; k++) {
+            const char *name = k == 1 ? "T22" : k == 2 ? "T23" : "T24";
+            CASE(name) {
+                Reset(CGSizeMake(1194, 834)); gWatcherPaused = NO;
+                TStage *st = MakeStage(kFillM1, [NSString stringWithUTF8String:name]); Settle(st);
+                int adds = gPhase1Adds;
+                TCommitted c = Turn(st, YES, ^{ st.picLayout = k; [st setNeedsLayout]; });
+                int clipped = 0, pics = 0;
+                for (UIView *v in st.holder.subviews) if ([v isKindOfClass:[TSceneLayerHost class]]) { pics++; if (v.layer.masksToBounds || v.layer.cornerRadius > 0) clipped++; }
+                BOOL masked = c.hasMask && fabs(c.mask.width - c.holder.width) <= 0.5 && fabs(c.mask.height - c.holder.height) <= 0.5 && !clipped && c.holderFill;
+                NSString *what = k == 1 ? @"lays the app's picture out 20 pt past the holder's bottom (Aerial's trim crops the app that way)" : k == 2 ? @"puts a second picture in" : @"fills the holder again";
+                BOOL ok = (k == 3 && !gTwoPictures) ? NoBand(c) : masked;
+                Check(ok && gPhase1Adds - adds == 1, [NSString stringWithFormat:@"%s Aerial's layout in the commit %@: %@ (%d picture(s), %d clipped, %@; %d pre-commit handler(s))", name, what,
+                      (k == 3 && !gTwoPictures) ? @"the clip, the holder's fill taken off in that commit" : @"the mask in that commit", pics, clipped, Band(c), gPhase1Adds - adds]);
+            }
+        }
         if (only && !strcmp(only, "T15")) {   // an iOS without pre-commit handlers (own process: the answer is read once): the end of the pass alone
             Method rs = class_getClassMethod([CATransaction class], @selector(respondsToSelector:));
             gOrigResponds = (BOOL (*)(id, SEL, SEL))method_setImplementation(rs, (IMP)TNoHandlers);
@@ -386,6 +459,10 @@ int main(int argc, char **argv) {
             TStage *st = MakeStage(kFillM1, @"T14"); Settle(st); [gLog removeAllObjects];
             Turn(st, YES, ^{ AerialPass(st); });
             NSString *all = [gLog componentsJoinedByString:@"\n"];
+            if (!gTwoPictures) {
+                gKill = YES; Turn(st, YES, ^{ AerialPass(st); }); all = [gLog componentsJoinedByString:@"\n"];
+                Check(![all containsString:@"COMMITTED"], [NSString stringWithFormat:@"T14 (debug) the app's picture clipped: no COMMITTED line, with the kill switch too (%lu lines)", (unsigned long)gLog.count]);
+            } else {
             Check([all containsString:@"by the paused watcher's pass before the commit"] && [all containsString:@"by the put-back"] && ![all containsString:@"COMMITTED"],
                   @"T14 (debug) [a5mask] lines: the paused watcher's write, then the put-back's; no COMMITTED line");
             gKill = YES; [gLog removeAllObjects];
@@ -393,6 +470,7 @@ int main(int argc, char **argv) {
             all = [gLog componentsJoinedByString:@"\n"];
             Check([all containsString:@"[a5mask] COMMITTED T14: holder {1194, 711"] && [all containsString:@"mask {1142, 679"],
                   [NSString stringWithFormat:@"T14 (debug) with the kill switch: a COMMITTED line names the band (%@)", [[all componentsSeparatedByString:@"\n"] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF CONTAINS 'COMMITTED'"]].firstObject ?: @"none"]);
+            }
         }
 #endif
     }

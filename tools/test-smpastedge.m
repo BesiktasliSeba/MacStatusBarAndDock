@@ -37,6 +37,11 @@ static void DMSMBringToFront(NSString *key) { [gTFront addObject:key ?: @"(nil)"
 static void DMTitleRecordMovedSM(NSString *key) { (void)key; }
 static BOOL gTSnap; static CGPoint gTSnapAt;
 static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *at) { (void)key; (void)card; (void)t; if (gTSnap) *at = gTSnapAt; return gTSnap; }
+#ifndef SPE_REAL_BAKE   // (1.8.8.4: a drag that starts on a title bar slid down with the menu bar -- the real one runs in test-autohidetop.sh; none is slid here)
+static CGFloat DMAutoHideSMBake(UIView *bar) { (void)bar; return 0.0; }
+#else
+static CGFloat DMAutoHideSMBake(UIView *bar);
+#endif
 
 // ---- the screens: the iPad's (it is UIKit's main screen here) and a TV
 @interface KScreen : UIScreen
@@ -62,6 +67,9 @@ static BOOL gTAutoHide = NO;   // (the iPad's Dock hides itself: its desktop dow
 // down to the Dock's line (117 pt Dock, 2 pt gap) -- with the Dock at a side, beside it and down to the bottom --; the TV's under its bar, above its
 // 100 pt Dock.
 static CGFloat gTIPadDock = 117.0, gTIPadTop = 24.0;
+#ifdef SPE_REAL_DESK   // (test-pastedgeparity.sh: StatusBar.x's own desktop and stage top, below -- spe-desk.inc)
+static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut);
+#else
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {
     if ([identity isEqual:@"tv"]) {
         CGSize s = gTV.size;
@@ -76,6 +84,7 @@ static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {
     CGFloat bottom = gTAutoHide ? s.height : s.height - gTIPadDock - 2.0;
     return CGRectMake(0, gTIPadTop, s.width, bottom - gTIPadTop);
 }
+#endif
 static BOOL gTNoTVIdentity = NO;   // (the TV's display not read: no identity for it)
 static id DMSMIdentityOfScreen(UIScreen *sc) { return sc == gTV ? (gTNoTVIdentity ? nil : @"tv") : @"main"; }
 // The screen of a container's size (StatusBar.x DMSMScreenOfSize): the iPad's in either shape, or the TV's
@@ -193,6 +202,9 @@ static BOOL gTOnResizeEdge;   // (the pointer marks a resize band: SpringBoard's
 static BOOL DMSMPointerOnResizeEdge(UIView *card) { (void)card; return gTOnResizeEdge; }
 
 #include "spe-decl.inc"   // (kSMBarH, the drag's globals, the @interface DMSMTitleBar: StatusBar.x's)
+#ifdef SPE_REAL_DESK
+#include "spe-desk.inc"   // (StatusBar.x's DMTopLimit, DMSMUsableAreaForIdentity, the _statusBarHeight answer and DMSMStageTopByDisplay)
+#endif
 #include "spe-glue.inc"   // (the past-edge glue, DMSMCardDesk, DMSMAttrsFitScreen, iPadOS 16's before / after: StatusBar.x's)
 @implementation DMSMTitleBar
 #include "spe-pan.inc"    // (-gestureRecognizer:shouldReceiveTouch: and -dm_pan:)
@@ -649,6 +661,20 @@ int main(void) {
         m2.centers = [@{@"A": [NSValue valueWithCGPoint:CGPointMake(100, 400)]} mutableCopy]; m2.sizes = [@{@"A": [NSValue valueWithCGSize:CGSizeMake(600, 400)]} mutableCopy];
         Check(DMSMPastEdgeBefore16(m2, area).count == 1, @"16: the recorded window alone is read");
         Check(DMSMPastEdgeBefore16(m2, CGRectMake(0, 250, 1366, 655)) == nil, @"16: a recorded window whose top is above the area's (a taller bar since) is not kept there");
+        {   // (1.8.8.4) let go past the left edge at the screen's top edge while the menu bar hid itself (card top 24), the bar back since (the stage area at 48)
+            TModel *m3 = [TModel new];
+            m3.items = @[@"A"]; m3.containerBounds = CGRectMake(0, 0, 1366, 1024);
+            m3.centers = [@{@"A": [NSValue valueWithCGPoint:CGPointMake(100, 224)]} mutableCopy]; m3.sizes = [@{@"A": [NSValue valueWithCGSize:CGSizeMake(600, 400)]} mutableCopy];
+            NSArray<NSValue *> *rec0 = gSMPastEdge[kNotes];
+            gSMPastEdge[kNotes] = @[[NSValue valueWithCGPoint:CGPointMake(100, 224)], [NSValue valueWithCGSize:CGSizeMake(600, 400)], [NSValue valueWithCGSize:CGSizeMake(1366, 1024)]];
+            CGRect a48 = CGRectMake(0, 48, 1366, 857);
+            NSArray *h3 = DMSMPastEdgeBefore16(m3, a48);
+            TAppleConstrain(m3, a48, 0); TAppleConstrain(m3, a48, 1);
+            DMSMPastEdgeAfter16(m3, h3);
+            Check(h3.count == 1 && NearPt([m3 centerForItem:@"A"], 100, 248) && RecIs(kNotes, 100, 248, 600, 400, 1366, 1024),
+                  @"16: recorded at the top edge while the bar hid itself, the bar back: kept under it again (centre y 248), still past the left edge, the record with it");
+            gSMPastEdge[kNotes] = rec0;
+        }
         m2.containerBounds = CGRectMake(0, 0, 1024, 1366);
         Check(DMSMPastEdgeBefore16(m2, area) == nil, @"16: another container size (another screen or shape): not kept");
         ClearRecords();

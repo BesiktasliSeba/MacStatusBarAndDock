@@ -14,14 +14,23 @@
 // The screen: 1194 x 834 pt (an 11-inch iPad in landscape), the menu bar 24 pt, the Dock at the bottom; the window 600 x 400 pt as drawn at
 // (297, 200); the finger goes down on its title bar, the recogniser begins further on, then four steps to the end, let go there. Every case is
 // played with the recogniser begun 12, 28, 52 and 59 pt after the touch-down (1.8.8.3 review: UIKit's own begin, as the iPads showed it -- up to
-// 17.5 pt on the iPad 2, 28 on the A12Z, 52 on the 17.5.1 for a quick finger -- and just inside every engine's 60 pt limit), its travel counted
+// 17.5 pt on iPadOS 16.7.7, 28 on 18.5, 52 on 17.5.1 for a quick finger -- and just inside every engine's 60 pt limit), its travel counted
 // from there (none at its start, as UIKit counts a pan's) for every engine.
 
+// PAR_AUTOHIDE 1 (1.8.8.4, engine parity, item 5): the same cases with the menu bar hiding itself (auto-hide on, a pointer attached): every engine's
+// real top code -- DMTopLimit; ours also its desktop (DMSMUsableAreaForIdentity) and Stage Manager's stage top, our _statusBarHeight answer put right by
+// DMSMStageTopByDisplay, which its layout pass keeps the card under --, each case's top at the screen's top edge (y 0) instead of under the bar.
+#ifndef PAR_AUTOHIDE
+#define PAR_AUTOHIDE 0
+#endif
+#define PAR_TOP (PAR_AUTOHIDE ? 0.0 : 24.0)
 #if PAR_ENGINE == 1
+#define SPE_REAL_DESK 1
 #define main spe_harness_main
 #include "test-smpastedge.m"
 #undef main
 #elif PAR_ENGINE == 2
+#define APE_REAL_TOP 1
 #define main ape_harness_main
 #include "test-aerialpastedge.m"
 #undef main
@@ -33,7 +42,7 @@
 static void DMLog(NSString *s) { (void)s; }
 static BOOL DMTestFlag(const char *path) { (void)path; return NO; }
 #define DM_FEATURE_MARK(name) do { } while (0)
-static CGFloat DMTopLimit(void) { return 24.0; }   // (right under the 24 pt menu bar, as every other part of this test)
+#include "par-top.inc"   // (StatusBar.x's DMTopLimit: right under the 24 pt menu bar, or the top edge while it hides itself -- PAR_AUTOHIDE)
 static const void *kStageGestureKey = &kStageGestureKey;
 static int gPRemembered;
 static void DMSnapMoveEnded(UIView *st) { (void)st; }   // (the snap: one step on every engine, not this test's)
@@ -45,6 +54,7 @@ static void DMMWRememberSoon(UIView *win) { (void)win; gPRemembered++; }      //
 static void DMFitGroupForget(NSString *b) { (void)b; }
 static void DMSaveWindowState(void) { }
 static NSString *DMZetsuWindowBundle(UIWindow *w) { (void)w; return @"com.apple.mobilenotes"; }
+static BOOL DMRStripWindowDrag(UIView *win, UIGestureRecognizer *g, UIGestureRecognizerState state) { return NO; }   // (the Recent Windows Strip, 1.8.8.4: switched off here, as by default)
 // ---- the screen (its coordinate space: a fixed view), a Zetsu window (a UIWindow whose frame is in the screen's points), a MilkyWay4 window
 static UIView *gPSpace;
 @interface PScreen : UIScreen
@@ -134,6 +144,11 @@ static void PPlay(const PCase *c) {
     // (Stage Manager's layout passes then: a window past an edge stays only where the lookup keeps it; inside the screen nothing is asked)
     BOOL past = DMSMPastEdgeOut(asked, CGRectMake(0, 0, ipad.width, ipad.height)), held = DMSMPastEdgeHeldAt(at, s, ipad, &keep);
     if (held) at = keep;
+    // (... and every other window kept inside the stage area: its card under the area's top -- our _statusBarHeight answer, as DMSMStageTopByDisplay
+    //  puts a pass's top right; the real ones -- 48 under the bar, 24 while it hides itself)
+    CGFloat ans = TSMStatusBarHeight();
+    CGRect area = DMSMStageTopByDisplay(CGRectMake(0, ans, ipad.width, ipad.height - ans - 119.0), CGRectMake(0, 0, ipad.width, ipad.height));
+    if (!held && at.y - s.height / 2.0 < CGRectGetMinY(area)) at.y = CGRectGetMinY(area) + s.height / 2.0;
     POut("sm", c, CGRectMake(at.x - s.width / 2.0, at.y - s.height / 2.0 - kSMBarH, s.width, s.height + kSMBarH), !past || held);
 }
 static void PPlayAll(void) { for (size_t i = 0; i < sizeof kPCases / sizeof kPCases[0]; i++) PPlay(&kPCases[i]); }
@@ -201,7 +216,8 @@ int main(void) {
             gPBegin = begins[j];
             for (size_t i = 0; i < sizeof kPCases / sizeof kPCases[0]; i++) {
                 const PCase *c = &kPCases[i];
-                printf("CASE %s@%g %.3f %.3f %.3f %.3f %s, the pan begun %g pt on\n", c->name, gPBegin, kPStart.origin.x + c->tx - c->dx, fmax(24.0, kPStart.origin.y + c->ty - c->dy), kPStart.size.width, kPStart.size.height, c->what, gPBegin);
+                printf("CASE %s@%g %.3f %.3f %.3f %.3f %s, the pan begun %g pt on%s\n", c->name, gPBegin, kPStart.origin.x + c->tx - c->dx, fmax(PAR_TOP, kPStart.origin.y + c->ty - c->dy), kPStart.size.width, kPStart.size.height, c->what, gPBegin,
+                       PAR_AUTOHIDE ? " (the menu bar hiding itself)" : "");
             }
             PPlayAll();
         }

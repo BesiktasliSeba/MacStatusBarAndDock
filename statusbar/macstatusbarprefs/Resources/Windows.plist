@@ -227,7 +227,7 @@ Swipe Up to Quit: flicking a window up in the Mac Switcher, or swiping it up wit
 
 Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.
 
-Recent Windows Strip: your recent windows wait at the side of the desktop as small pictures, as with Stage Manager on a Mac. Tap or click one to bring it forward. When a window covers that side the strip steps aside: move the pointer to the edge, or choose Window &gt; Show Recent Windows, to bring it back.</string>
+Recent Windows Strip: minimized windows wait at the side of the desktop as small pictures, as with Stage Manager on a Mac. Tap or click one to swap it with the window in front, or drag it out to where you want it. Drag a window to the strip to put it there. The Home Screen keeps room for it. When a window covers the strip, move the pointer to the edge, tap its handle, or choose Window &gt; Show Recent Windows.</string>
 			<key>id</key>
 			<string>MSW_GROUP</string>
 			<key>stockHides</key>

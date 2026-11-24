@@ -207,6 +207,9 @@ sym DockMagnification \$SBIconView\$tapGestureDidChange\$$ transparent
 # 1.8.7.5 (TRASH15B): an icon drag's begin (Dock.x %group DMDragEditNote), which every icon drag runs through: it reads Edit Home Screen and passes
 # the call on, so the same
 sym DockMagnification \$SBIconView\$dragInteraction\$sessionWillBegin\$$ transparent
+# (1.8.8.4: the Recent Windows Strip's band on the Home Screen: MacStatusBar's strip sets it through this one export of Dock.x, MSBDHomeStripRoom; a
+#  crash in it is the strip's, whose switch off sets no band; the page frame hook it shares stays the side Dock's, as before)
+sym DockMagnification ^_*MSBDHomeStripRoom$ recentStrip
 file DockMagnification ^DockStyle\.m$ dockStyle
 # (1.8.8.1: Dock Background's code, DockColor.m -- what the platter's layout hook, Dock Style's walk and dot, and the dividers' calls reach of it)
 # The Dock's divider helpers in Dock.x that DockColor.m calls (the two dividers, the second one's one writer and what it copies, out of line in a

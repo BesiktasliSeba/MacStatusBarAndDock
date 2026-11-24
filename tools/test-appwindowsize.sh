@@ -275,6 +275,7 @@ c3_opening() {
 c3_window() {
   f1 'static CGRect DMSMNewWindowFrameAt(int choice, CGRect u, CGSize scr) {' "$1" > "$W/sw3" && grep -qF 'if (CGRectIsNull(u) || CGRectIsEmpty(u) || scr.width < 1.0 || scr.height < 1.0) return CGRectNull;' "$W/sw3" \
     && order 'CGSize least = CGSizeMake(MAX(DMSMMinWindowWidth(scr), kMSBDWindowMinWidth), kMSBDWindowMinAppHeight + kSMBarH);' 'if (choice == kMSBDOpenIPhone) { DM_FEATURE_MARK("app-window-size-iphone-sm"); return MSBDWindowPhoneIn(u, kSMBarH, least); }' "$W/sw3" \
+    && order 'if (choice != MSBDWindowSizeDefault) u = DMSMNewWindowDesk(u, scr);' 'CGSize least = CGSizeMake(MAX(DMSMMinWindowWidth(scr), kMSBDWindowMinWidth), kMSBDWindowMinAppHeight + kSMBarH);' "$W/sw3" \
     && grep -qxF '    return MSBDWindowSizeFrameIn(choice, u, scr, DMCenterTopFor(scr), least);' "$W/sw3" && ! grep -q 'DMAppSizeOf\|gWindowSizeChoice\|identity' "$W/sw3" \
     && grep -qF 'static CGRect DMSMNewWindowFrameIn(CGRect u, CGSize scr, id identity) { return DMSMNewWindowFrameAt(DMWindowSizeChoiceFor(identity), u, scr); }' "$1"
 }
@@ -306,6 +307,7 @@ static BOOL DMNewWindowsFillFor(id identity) { return identity && gFill[identity
 static CGFloat DMSMMinWindowWidth(CGSize s) { (void)s; return gSMMin; }
 static CGFloat DMCenterTopFor(CGSize s) { (void)s; return 36.0; }
 static CGRect DMSMLayoutFrameIn(NSString *name, CGRect u, CGSize scr) { (void)scr; return [name isEqualToString:@"fill"] ? u : CGRectNull; }   // (Fill: the desktop)
+static CGRect DMSMNewWindowDesk(CGRect u, CGSize s) { (void)s; return u; }   // (1.8.8.4: the iPad's desktop under the bar while it hides itself: these desktops are under it already)
 #include "smof.h"
 static int fails = 0, n = 0;
 static void Expect(BOOL ok, NSString *what) { n++; if (!ok) { fails++; printf("FAIL: %s\n", what.UTF8String); } }

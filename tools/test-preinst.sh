@@ -2,7 +2,7 @@
 # test-preinst.sh: runs layout/DEBIAN/preinst on the Mac against sample /var/lib/dpkg/status contents, one per dependency state, and checks that it
 # goes on or refuses as it should. dpkg is not installed on the Mac, so a small stand-in answers `dpkg-query -W -f='${db:Status-Status}' <pkg>` from
 # the sample status file (the third word of the package's "Status:" line; nothing and exit 1 for an unknown package, as dpkg-query does). The
-# preinst runs unchanged except that /var/jb points into a scratch folder.
+# preinst runs unchanged except that every path it names points into a scratch folder (tools/scratch-root.sh).
 set -u
 cd "$(dirname "$0")/.."
 W=$(mktemp -d "${TMPDIR:-/tmp}/msbd-preinst.XXXXXX")
@@ -18,8 +18,8 @@ rc=$?
 printf %s "$out"
 EOF
 chmod +x "$W/root/var/jb/usr/bin/dpkg-query"
-sed "s#/var/jb#$W/root/var/jb#g" layout/DEBIAN/preinst > "$W/preinst"
-chmod +x "$W/preinst"
+. tools/scratch-root.sh   # (every absolute path the script names under $W/root, checked: on an iPad's test lane /var/jb is real)
+left=$(scratch_copy layout/DEBIAN/preinst "$W/root" "$W/preinst") || { echo "FAIL  the preinst copy still names real paths (never run): $left"; exit 1; }
 
 stanza() {   # stanza <package> <want> <flag> <state>
     printf 'Package: %s\nStatus: %s %s %s\nVersion: 1.0\nArchitecture: iphoneos-arm64\n\n' "$1" "$2" "$3" "$4"

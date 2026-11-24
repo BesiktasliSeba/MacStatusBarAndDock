@@ -12,6 +12,9 @@
 # engine's touch-down note sees where it went down (1.8.8.3: our Stage Manager engine's too: its drag went by UIKit's translation alone and ended
 # 12 pt short here, 9 to 52 pt on the 17.5.1 and 16.7.7 device passes; review: Aerial 3.0's, whose start was the pan's, and every engine's limit
 # at 60 pt, Aerial's and MilkyWay4's 40 leaving a quick finger's drag unfollowed). Then a site check of the four limits.
+# 1.8.8.4 (engine parity, item 5): every case again with the menu bar hiding itself (auto-hide on, a pointer attached): the real DMTopLimit in every
+# engine's code, our engine's real desktop (DMSMUsableAreaForIdentity) and Stage Manager's stage top (our real _statusBarHeight answer, put right by the
+# real DMSMStageTopByDisplay) that its layout pass keeps a card under: the top case at the screen's top edge on all six, as on a Mac.
 # Then made-to-fail copies: each breaks one engine and must fail.
 cd "$(dirname "$0")" || exit 1
 SDK=$(xcrun --show-sdk-path 2>/dev/null || echo /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk)
@@ -43,6 +46,7 @@ SM_TOUCH='- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:
 A_CHAIN=('static void DMAerial5SyncState(UIView *stage, CGRect frame) {' 'static void DMKeepStagePlace(UIView *stage, CGRect frame) {'
          'static void DMSetStageIntent(UIView *stage, CGRect frame) {' 'static void DMRememberStageFrame(UIView *stage) {' 'static CGRect DMA5WindowFromStage(CGRect f) {')
 A_PAN='- (void)handlePan:(id)gesture {'
+A_LIVE=('static BOOL DMAerial5GestureLive(UIView *stage) {' 'static BOOL DMAerial5HandGestureLive(UIView *stage) {')   # (its harness includes them: 1.8.8.4 review)
 a30cut() { awk 'index($0, "// A drag by hand. NO: the drag was cancelled here") == 1 {f=1} f {print} f && index($0, "static void DMAerialGestureAfter(") == 1 {g=1} g && /^[}]/ {exit}' "$1"; }
 a5cut() { awk 'index($0, "// ---- Aerial 5.0: a window moves by its title strip only") == 1 {f=1} f {print} f && index($0, "@implementation DMA5DragGuard") == 1 {g=1} g && /^@end/ {exit}' "$1"; }
 # (Zetsu: our title-bar pan and where it reads the finger; MilkyWay4: our catch-up's touch-down note and its title-bar target)
@@ -51,21 +55,25 @@ Z_FN=('static void DMZetsuNoteTouchDown(UIWindow *w, NSSet<UITouch *> *touches) 
       'static CGPoint DMPanDownPointOnScreen(UIPanGestureRecognizer *g, UIWindow *w, CGRect *frame) {')
 Z_IFACE='@interface DMZetsuBarPan : NSObject'
 MW_LINE='static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;'
+# (the top: DMTopLimit; ours: its desktop, the _statusBarHeight answer's globals and the hook, DMSMStageTopByDisplay)
+TOP_FN='static CGFloat DMTopLimit(void) {'; DESK_FN='static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {'
+PASS_FN='static CGRect DMSMStageTopByDisplay(CGRect r, CGRect b) {'; ANS_LINE='static CGFloat gSMStatusBarOrigH = -1'; LOW_LINE='static BOOL gSMStatusBarLowered'
+HOOK_FN='- (CGFloat)_statusBarHeight {'
 MW_DRAG='- (void)dragged:(UIPanGestureRecognizer *)g {'
 mwtouch() { awk 'index($0, "@implementation DMMWResizeCatchUp") == 1 {f=1} f && index($0, "- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {") == 1 {g=1} g {print} g && /^[}]/ {exit}' "$1"; }
 
-build() {   # $1 engine number, $2 work dir, $3 output binary: built from test-pastedgeparity.m
+build() {   # $1 engine number, $2 work dir, $3 output binary, $4 the menu bar hiding itself (0 / 1): built from test-pastedgeparity.m
   clang -target "$(uname -m)-apple-ios14.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" \
-        -DPAR_ENGINE="$1" -fobjc-arc -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-const-variable -Werror=implicit-function-declaration -I"$2" -I. -I../statusbar \
+        -DPAR_ENGINE="$1" -DPAR_AUTOHIDE="${4:-0}" -fobjc-arc -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-const-variable -Werror=implicit-function-declaration -I"$2" -I. -I../statusbar \
         -framework UIKit -framework CoreGraphics -framework QuartzCore -o "$3" test-pastedgeparity.m 2>>"$2/cc.txt"
 }
-run() {   # $1 StatusBar.x, $2 SMPastEdge.h, $3 work dir, $4 quiet: the number of failed checks (99: the code could not be cut out or built)
-  local X=$1 H=$2 d=$3 q=$4 h n=0
+run() {   # $1 StatusBar.x, $2 SMPastEdge.h, $3 work dir, $4 quiet, $5 the menu bar hiding itself (0 / 1): the number of failed checks (99: not built)
+  local X=$1 H=$2 d=$3 q=$4 ah=${5:-0} h n=0
   mkdir -p "$d"; : > "$d/cc.txt"
   cp "$H" "$d/SMPastEdge.h" || { echo "FAIL  no $H"; return 99; }
   [ -n "$(blk "$X" "$SM_IFACE")" ] && [ "$(grep -cF -e "$SM_PAN" "$X")" = 1 ] && [ "$(grep -cF -e "$SM_TOUCH" "$X")" = 1 ] || { echo "FAIL  $X: no title bar drag of the Stage Manager engine"; return 99; }
   for h in "${SM_DECL[@]}" "${SM_LINES[@]}" "${Z_LINES[@]}" "$MW_LINE"; do [ -n "$(line "$X" "$h")" ] || { echo "FAIL  $X: no line starting \"$h\""; return 99; }; done
-  for h in "${SM_FN[@]}" "${A_CHAIN[@]}" "${Z_FN[@]}" "$MW_DRAG"; do [ -n "$(fn "$X" "$h")" ] || { echo "FAIL  $X: no \"$h\""; return 99; }; done
+  for h in "${SM_FN[@]}" "${A_CHAIN[@]}" "${A_LIVE[@]}" "${Z_FN[@]}" "$MW_DRAG"; do [ -n "$(fn "$X" "$h")" ] || { echo "FAIL  $X: no \"$h\""; return 99; }; done
   [ "$(grep -cF -e "$A_PAN" "$X")" = 1 ] && [ -n "$(a30cut "$X")" ] && a5cut "$X" | grep -q '^@implementation DMA5DragGuard' || { echo "FAIL  $X: no Aerial drag code"; return 99; }
   awk -v h="$Z_IFACE" 'index($0, h) == 1 {f=1} f {print} f && /^@end/ {n++} n == 2 {exit}' "$X" | grep -q '^@implementation DMZetsuBarPan' || { echo "FAIL  $X: no Zetsu title-bar pan"; return 99; }
   [ -n "$(mwtouch "$X")" ] || { echo "FAIL  $X: no MilkyWay4 touch-down note"; return 99; }
@@ -77,13 +85,30 @@ run() {   # $1 StatusBar.x, $2 SMPastEdge.h, $3 work dir, $4 quiet: the number o
   for h in "${A_CHAIN[@]}"; do fn "$X" "$h"; done | sed 's/\[UIScreen mainScreen\]\.bounds/KScreenBounds()/g' > "$d/ape-chain.inc"
   a30cut "$X" | sed 's/\[UIScreen mainScreen\]\.bounds/KScreenBounds()/g' > "$d/ape-30.inc"
   a5cut "$X" | sed 's/\[UIScreen mainScreen\]\.bounds/KScreenBounds()/g' > "$d/ape-drag.inc"
+  for h in "${A_LIVE[@]}"; do fn "$X" "$h"; done > "$d/ape-live.inc"
   awk -v h="$A_PAN" 'index($0, h) == 1 {f=1} f {print} f && /^[}]/ {exit}' "$X" | sed 's/^\( *\)%orig;/\1[self k_origPan:gesture];/' > "$d/ape-hook.inc"
   grep -q '%orig' "$d/ape-hook.inc" && { echo "FAIL  $X: a %orig left in the hook cut out"; return 99; }
   # (Zetsu and MilkyWay4)
   { for h in "${Z_LINES[@]}"; do line "$X" "$h"; done; for h in "${Z_FN[@]}"; do fn "$X" "$h"; done
     awk -v h="$Z_IFACE" 'index($0, h) == 1 {f=1} f {print} f && /^@end/ {n++} n == 2 {exit}' "$X"; } > "$d/par-zetsu.inc"
   { line "$X" "$MW_LINE"; echo '@implementation TMWCatchUp'; mwtouch "$X"; fn "$X" "$MW_DRAG"; echo '@end'; } > "$d/par-mw.inc"
-  for h in 1 2 3; do build $h "$d" "$d/t$h" || { [ -n "$q" ] || cat "$d/cc.txt"; echo "FAIL  the real code did not build (engine part $h)"; return 99; }; done
+  # (every engine's top: StatusBar.x's DMTopLimit with the bar hiding itself or not; ours also its desktop and Stage Manager's stage top)
+  [ -n "$(line "$X" "$TOP_FN")" ] && [ -n "$(fn "$X" "$DESK_FN")" ] && [ -n "$(fn "$X" "$PASS_FN")" ] && [ -n "$(line "$X" "$ANS_LINE")" ] \
+    && [ -n "$(awk -v h="$HOOK_FN" 'index($0, h) == 1 {f=1} f {print} f && /^[}]/ {exit}' "$X")" ] || { echo "FAIL  $X: no top code to cut out"; return 99; }
+  { echo '#include "../common/MenuBarHeight.h"'; echo '#include "../common/BarAutoHide.h"'
+    echo "static BOOL DMAutoHideLayout(void) { return $ah; }   // (the menu bar hiding itself: auto-hide on, a pointer attached)"
+    echo 'static CGFloat DMMenuBarHeight(void) { return 24.0; }'; line "$X" "$TOP_FN"; } > "$d/par-top.inc"
+  { echo '#include "par-top.inc"'
+    echo 'static CGRect DMUsableArea(void) { CGSize s = gIPad.size; CGFloat top = DMTopLimit(); return CGRectMake(0, top, s.width, MAX(200.0, s.height - gTIPadDock - 2.0 - top)); }'
+    echo 'static CGFloat DMTVBarHeight(void) { return 24.0; }'; echo 'static int gDMBarSize = 0; static int DMTVBarSizeNow(void) { return 0; }'
+    echo 'static BOOL DMDockAutoHidesOn(UIScreen *s) { (void)s; return NO; }'
+    echo 'static double MSBDAutoHideRoomEdge(int autoHide, double dockEdge, double screenEdge) { return autoHide ? screenEdge : dockEdge; }'
+    echo 'static NSArray<UIScreen *> *TScreens(void) { return @[gIPad, gTV]; }'
+    fn "$X" "$DESK_FN"; line "$X" "$ANS_LINE"; [ -n "$(line "$X" "$LOW_LINE")" ] && line "$X" "$LOW_LINE"; fn "$X" "$PASS_FN"
+    echo 'static CGFloat gTIOSStatusBarH = 24.0;   // (iOS'"'"'s own status bar height on a Face ID iPad)'
+    awk -v h="$HOOK_FN" 'index($0, h) == 1 {f=1} f {print} f && /^[}]/ {exit}' "$X" | sed 's/^- (CGFloat)_statusBarHeight {$/static CGFloat TSMStatusBarHeight(void) {/; s/%orig/gTIOSStatusBarH/'
+  } | sed 's/\[UIScreen mainScreen\]/TMainScreen()/g; s/\[UIScreen screens\]/TScreens()/g' > "$d/spe-desk.inc"
+  for h in 1 2 3; do build $h "$d" "$d/t$h" $ah || { [ -n "$q" ] || cat "$d/cc.txt"; echo "FAIL  the real code did not build (engine part $h)"; return 99; }; done
   [ -n "$q" ] || grep -E 'warning:|error:' "$d/cc.txt"
   { "$d/t1"; "$d/t2"; "$d/t3"; } > "$d/frames.txt" 2>&1
   python3 -I - "$d/frames.txt" "$q" <<'PY'
@@ -132,6 +157,8 @@ if grep -qF '&& hypot(before.x, before.y) < 60.0) { _follows = YES;' "$X0" && gr
    && [ "$(fn "$X0" "$MW_DRAG" | grep -cF '(hypot(d.x, d.y) >= 0.5 && hypot(d.x, d.y) < 60.0) ?')" = 1 ]; then
   echo "PASS  site: every engine's title-bar drag follows a touch-down up to 60 pt from where UIKit began the pan (ours, Zetsu, Aerial, MilkyWay4)"
 else echo "FAIL  site: the engines' title-bar drags do not share the 60 pt limit"; rc=1; fi
+echo "-- the same with the menu bar hiding itself (1.8.8.4)"
+run "$X0" "$H0" "$W/real-ah" "" 1; r=$?; [ $r = 0 ] || rc=$r
 if [ -z "$PAR_SB_X$PAR_H" ]; then
   echo "-- made-to-fail copies (each must fail)"
   mtf() {   # $1 what, $2 which file (X StatusBar.x, H SMPastEdge.h), $3 perl expression on it (-0777: the whole file)
@@ -154,5 +181,17 @@ if [ -z "$PAR_SB_X$PAR_H" ]; then
   mtf "Aerial's limit at 40 pt (a quick finger's drag kept inside by Aerial's own step)" X 's/if \(began && !\(hypot\(dx, dy\) < 60\.0\)\)/if (began \&\& !(hypot(dx, dy) < 40))/'
   mtf "MilkyWay4's limit at 40 pt (a quick finger's drag as far behind as its recogniser's start)" X 's/\(hypot\(d\.x, d\.y\) >= 0\.5 && hypot\(d\.x, d\.y\) < 60\.0\) \? \[NSValue valueWithCGPoint:d\] : \[NSValue valueWithCGPoint:CGPointZero\]/(hypot(d.x, d.y) >= 0.5 \&\& hypot(d.x, d.y) <= 40) ? [NSValue valueWithCGPoint:d] : [NSValue valueWithCGPoint:CGPointZero]/'
   mtf "Aerial 3.0's touch-down not noted (its drag from where UIKit began the pan)" X 's/    if \(gAerialFlavor != 3 \|\| !stage\.superview \|\| !touch\) return;/    return;/'
+  # (1.8.8.4: with the menu bar hiding itself)
+  mtfah() {   # as mtf, the run with the menu bar hiding itself
+    local d="$W/m$((++k))" out
+    mkdir -p "$d"; out="$d/StatusBar.x"
+    perl -0777 -pe "$2" "$X0" > "$out"
+    cmp -s "$out" "$X0" && { echo "FAIL  made-to-fail copy \"$1\": nothing changed"; rc=1; return; }
+    run "$out" "$H0" "$d/w" q 1; r=$?
+    if [ $r -gt 0 ] && [ $r -lt 99 ]; then echo "PASS  caught with the bar hiding itself: $1 ($r case(s) differ)"; else echo "FAIL  not caught with the bar hiding itself: $1 ($r)"; rc=1; fi
+  }
+  mtfah "our stage top keeping the bar's room while it hides itself (1.8.8.3's answer, the iPad's pass as it carries it)" 's/MSBDBarAHSMStageTop\(h, DMMenuBarHeight\(\), title, hides\)/MSBDBarAHSMStageTop(h, DMMenuBarHeight(), title, 0)/; s/    BOOL tv = s != \[UIScreen mainScreen\];\n/    BOOL tv = s != [UIScreen mainScreen];\n    if (!tv) return r;\n/'
+  mtfah "our desktop raised to the bar while it hides itself (1.8.8.3's)" 's/    CGFloat top = DMTopLimit\(\);\n    if \(CGRectGetMinY\(u\) < top\)/    CGFloat top = DMMenuBarHeight();\n    if (CGRectGetMinY(u) < top)/'
+  mtfah "Zetsu's title bar held under the bar while it hides itself" 's/    f\.origin\.y = MAX\(DMTopLimit\(\), f\.origin\.y\);   \/\/ the title bar never goes above/    f.origin.y = MAX(24.0, f.origin.y);   \/\/ the title bar never goes above/'
 fi
 exit $rc

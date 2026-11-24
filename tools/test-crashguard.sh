@@ -20,7 +20,7 @@ setup() {
   cp crash-fixtures/ours-in-faulting-thread.ips "$R/SpringBoard.cpu_resource-2026-09-26-100400.ips"
 }
 # (1.8.7: the displays domain is a test one; the guard writes into it, so CoreFoundation is linked: the guard finds it loaded)
-D="-DMSBD_DISP_DOMAIN=\"com.besiktasliseba.test-msbd.displays\" -DMSBD_GUARD_REPORTS=\"$R\" -DMSBD_GUARD_VERDICTS=\"$W/verdicts.txt\" -DMSBD_GUARD_RECORD=\"$W/record.txt\" -DMSBD_GUARD_RECENT=\"$W/recent.txt\" -DMSBD_GUARD_NOTICE_LIB=\"$W/missing-notice.dylib\" -DMSBD_GUARD_FILE=\"$W/guard.txt\" -DMSBD_CAUSE_FILE=\"$W/causes.txt\" -iquote $ROOT/common -DMSBD_TEST_GUARD_H=\"$ROOT/common/CrashGuard.h\" -DMSBD_TEST_LATE_LIB=\"$W/late/OtherTweakLate.dylib\""
+D="-DMSBD_DISP_DOMAIN=\"com.besiktasliseba.test-msbd.displays\" -DMSBD_GUARD_REPORTS=\"$R\" -DMSBD_GUARD_VERDICTS=\"$W/verdicts.txt\" -DMSBD_GUARD_RECORD=\"$W/record.txt\" -DMSBD_GUARD_RECENT=\"$W/recent.txt\" -DMSBD_GUARD_NOTICE_LIB=\"$W/missing-notice.dylib\" -DMSBD_GUARD_FILE=\"$W/guard.txt\" -DMSBD_CAUSE_FILE=\"$W/causes.txt\" -DMSBD_STEP_FILE=\"$W/step.txt\" -DMSBD_CRASHMAP=\"$W/missing-crashmap.txt\" -iquote $ROOT/common -DMSBD_TEST_GUARD_H=\"$ROOT/common/CrashGuard.h\" -DMSBD_TEST_LATE_LIB=\"$W/late/OtherTweakLate.dylib\""
 setup; clang -Wall -Wno-unused-function -framework CoreFoundation $D -DMSBD_GUARD_BLAME_LIB="\"$W/MacCrashBlame.dylib\"" -o "$W/t1" test-crashguard.c && ${CRASHGUARD_ROOT:+env CRASHGUARD_REAL_ONLY=1} "$W/t1"
 echo "   verdict file:"; sed 's/^/      /' "$W/verdicts.txt"
 if [ -z "$CRASHGUARD_ROOT" ]; then

@@ -1,7 +1,8 @@
 // test-aerialpastedge.m: Mac test (Mac Catalyst: UIKit on the Mac) of an Aerial window dragged past the screen's left, right and bottom edges, as on
 // every engine (1.8.8.3, GitHub #19): the window follows the finger from where it was at touch-down on both axes, only its title bar's
 // top held under the menu bar; the place it is let go at (or a drag cut short leaves it at) is kept at once, ours and Aerial's own remembered frame
-// for the screen's shape, so Aerial's fit pass keeps it there; Aerial's Lock moves nothing; Aerial's Trim baseline goes with the window.
+// for the screen's shape, so Aerial's fit pass keeps it there; Aerial's Lock moves nothing, not even the snap at the end (1.8.8.4); Aerial's Trim
+// baseline goes with the window.
 // Runs the real code cut out of statusbar/StatusBar.x by test-aerialpastedge.sh: Aerial 5's drag section (the guard that notes where a touch went
 // down, DMA5DragFollow and what it uses, -dragTrace: on Aerial's stage recogniser, -areaDrag: on 5.1's drag area), Aerial 3.0's drag hooks (the
 // %hook AerialStage body of -handlePan:, DMAerialPanBefore ... DMAerialGestureAfter), DMRememberStageFrame with DMSetStageIntent, DMKeepStagePlace
@@ -28,7 +29,11 @@ static UIEdgeInsets gA5Insets = {13.0, 6.0, 20.0, 6.0};
 static CGFloat DMA5StageShift(void) { return MAX(0.0, 24.0 - gA5Insets.top); }
 static UIEdgeInsets DMA5InsetsOf(UIView *stage) { return gA5Insets; }   // (the code before 1.8.8.3 used it in the drag)
 static const CGFloat kStageBarHeight = 24.0;
+#ifndef APE_REAL_TOP
 static CGFloat DMTopLimit(void) { return 24.0; }   // (right under the 24 pt menu bar)
+#else
+#include "par-top.inc"   // (test-pastedgeparity.sh: StatusBar.x's DMTopLimit, the menu bar hiding itself or not)
+#endif
 static CGFloat DMAutoHideTitleShiftOf(UIView *stage) { return 0.0; }
 static CGFloat DMAutoHideShiftOf(UIView *stage) { return 0.0; }
 static BOOL DMAutoHideTopEdgeTouch(UITouch *t) { return NO; }
@@ -55,10 +60,12 @@ static NSString *DMStageBundle(UIView *stage);
 static void DMKeepStagePlace(UIView *stage, CGRect frame);
 static void DMSetStageIntent(UIView *stage, CGRect frame);
 static void DMRememberStageFrame(UIView *stage);
+static BOOL DMRStripWindowDrag(UIView *win, UIGestureRecognizer *g, UIGestureRecognizerState state) { return NO; }   // (the Recent Windows Strip, 1.8.8.4: switched off here, as by default)
 
 #include "ape-chain.inc"   // (DMAerial5SyncState, DMKeepStagePlace, DMSetStageIntent, DMRememberStageFrame, DMA5WindowFromStage)
 #include "ape-30.inc"      // (Aerial 3.0's drag: DMAerialPanBefore ... DMAerialGestureAfter)
 #include "ape-drag.inc"    // (Aerial 5's drag section: the guard, DMA5DragFollow and what it uses, -dragTrace:, -areaDrag:)
+#include "ape-live.inc"    // (Aerial 5's 0.2 s watcher's "a move by hand under way": DMAerial5GestureLive, DMAerial5HandGestureLive; 1.8.8.4 review)
 
 // ---- an Aerial window: its stage, with Aerial's own ivars (the names and types our code reads), its drag step and its fit pass
 @interface KStage : UIView {
@@ -171,7 +178,7 @@ static void Send(KPan *g, int how, UIGestureRecognizerState s) {
 }
 // A drag by the title bar: the finger goes down at `down` (the screen), the recogniser begins gKBegin pt further along x (its threshold: 12 here;
 // test-pastedgeparity.m plays the ways the iPads showed), then moves. Its travel is counted from there, as UIKit counts a pan's (none at its start:
-// 1.8.8.3 review -- the A12Z's and the M1's reads; this harness had the way before the start in it, which only Aerial 3.0's start read). The touch is
+// 1.8.8.3 review -- as read on iPadOS 18.5 and 15.6.1; this harness had the way before the start in it, which only Aerial 3.0's start read). The touch is
 // offered first to our guard (Aerial 5) or to our title strip's double tap, which notes it on Aerial 3.0 (DMAerial30NoteDown).
 static CGFloat gKBegin = 12.0;
 static KPan *Down(int how, CGPoint down) {
@@ -253,6 +260,17 @@ int main(void) {
             Setup(fl, fl == 5); gStage->_lockMode = YES;
             { CGRect f0 = gStage.frame; KPan *g = Down(how, bar); Path(g, how, CGPointMake(20, 400)); End(g, how, UIGestureRecognizerStateEnded);
               Check(RectIs(gStage.frame, f0) && PastLines() == 0, [NSString stringWithFormat:@"%@: a window in Aerial's Lock: neither Aerial's step nor ours moves it (%@)", w, R(gStage.frame)]); }
+            // ... let go 20 pt from the left edge (within the snap's 45 pt): no move by hand, so nothing of one's end -- it stays where it is
+            Setup(fl, fl == 5); gStage.frame = StageForWindow(CGRectMake(20, 200, 600, 400)); gStage->_lockMode = YES;
+            { CGRect f0 = gStage.frame; KPan *g = Down(how, CGPointMake(580, 210)); Path(g, how, CGPointMake(300, 300)); End(g, how, UIGestureRecognizerStateEnded);
+              int locked = 0; for (NSString *l in gKLog) if ([l containsString:@"is in Aerial's Lock: the drag moves nothing, no snap"]) locked++;
+              Check(RectIs(gStage.frame, f0) && gKSnaps == 0 && gKTitleRec == 0 && gKBehind == 0 && gKForget == 0 && gKSaved == 0 && !objc_getAssociatedObject(gStage, kStageIntentKey) && locked >= 1,
+                    [NSString stringWithFormat:@"%@: a locked window 20 pt from the left edge, dragged and let go: no snap onto the edge, no title-bar record, no place or tile change (snaps %d, records %d, behind %d, forget %d, saved %d; %@)", w, gKSnaps, gKTitleRec, gKBehind, gKForget, gKSaved, R(Drawn())]);
+              g = Down(how, CGPointMake(580, 210)); Path(g, how, CGPointMake(300, 300)); End(g, how, UIGestureRecognizerStateCancelled);
+              Check(RectIs(gStage.frame, f0) && gKTitleRec == 0 && gKBehind == 0 && !objc_getAssociatedObject(gStage, kStageIntentKey) && !objc_getAssociatedObject(gStage, &kA5DragDownKey) && !objc_getAssociatedObject(g, &kA5DragDownKey),
+                    [NSString stringWithFormat:@"%@: ... a locked window's drag cut short: no record, no behind-the-Dock mark, nothing kept (%@)", w, R(Drawn())]);
+              gStage->_lockMode = NO; gKSnaps = 0; KPan *u = Down(how, CGPointMake(580, 210)); Path(u, how, CGPointMake(300, 300)); End(u, how, UIGestureRecognizerStateEnded);
+              Check(gKSnaps == 1 && Kept(), [NSString stringWithFormat:@"%@: ... unlocked again: the same drag moves it, snaps and keeps its place as before (%@)", w, R(Drawn())]); }
             // Aerial's Trim mode: its baseline goes with the window
             Setup(fl, fl == 5); gStage->_trimMode = YES; gStage->_trimBaselineFrame = gStage.frame;
             { CGRect f0 = gStage.frame; KPan *g = Down(how, bar); Path(g, how, CGPointMake(20, 600)); End(g, how, UIGestureRecognizerStateEnded);
@@ -287,6 +305,21 @@ int main(void) {
           g.kHere = CGPointMake(845, 210); g.kMoved = CGPointZero; Send(g, KHook30, UIGestureRecognizerStateBegan);
           Path(g, KHook30, CGPointMake(20, 210)); End(g, KHook30, UIGestureRecognizerStateEnded);
           Check(RectIs(Drawn(), CGRectMake(-528, 200, 600, 400)), [NSString stringWithFormat:@"Aerial 3.0: no touch-down noted: followed from where its recogniser began (%@)", R(Drawn())]); }
+        // Aerial 5's 0.2 s watcher (DMAerial5Watch): a pan under way at one look and gone at the next is a move by hand, whose end keeps the place,
+        // takes the window out of Fit to Window's tiles and saves. A locked window's drag moves nothing: none by hand (1.8.8.4 review of B91)
+        Setup(5, YES);
+        { KPan *g = Down(KStageRec, bar); Move(g, KStageRec, CGPointMake(800, 260));
+          BOOL hand = DMAerial5HandGestureLive(gStage);
+          End(g, KStageRec, UIGestureRecognizerStateEnded);
+          BOOL after = DMAerial5HandGestureLive(gStage);
+          KPan *rs = [[KPan alloc] initWithTarget:nil action:NULL]; rs.kOn = YES; rs.kState = UIGestureRecognizerStateChanged; [gArea addGestureRecognizer:rs];   // (a pan on one of the stage's own views: a resize handle's)
+          BOOL handle = DMAerial5HandGestureLive(gStage); rs.kState = UIGestureRecognizerStatePossible;
+          Check(hand && !after && handle, [NSString stringWithFormat:@"Aerial 5's watcher: an unlocked window's title-bar drag, or a pan on one of its views, is a move by hand while it is under way, and over once let go (%d %d %d)", hand, after, handle]); }
+        Setup(5, YES); gStage->_lockMode = YES;
+        { CGRect f0 = gStage.frame; KPan *g = Down(KStageRec, bar); Move(g, KStageRec, CGPointMake(800, 260)); Move(g, KStageRec, CGPointMake(400, 300));
+          BOOL any = DMAerial5GestureLive(gStage), hand = DMAerial5HandGestureLive(gStage);
+          End(g, KStageRec, UIGestureRecognizerStateEnded);
+          Check(any && !hand && RectIs(gStage.frame, f0), [NSString stringWithFormat:@"Aerial 5's watcher: a locked window's drag (Aerial's recogniser under way, %d) is no move by hand (%d): nothing moved (%@), so its end keeps no place, leaves no tile and saves nothing", any, hand, R(gStage.frame)]); }
         // Aerial 5 in its own look (debug: our theme off): the stage is the window, its top Aerial's own (the screen's top)
         Setup(5, NO);
         { KPan *g = Down(KStageRec, bar); Path(g, KStageRec, CGPointMake(20, -40)); End(g, KStageRec, UIGestureRecognizerStateEnded);

@@ -429,8 +429,19 @@ int main(void) {
             ps.kept = TKept;
             CGRect a = ApplePass176(s11, cont, pad, ours);
             DMSM17PassEnd(&ps, a);
-            Check(@"past edge: a recorded window whose top is above the stage area is kept inside as before (top under the bar, left at the edge)", fabs(Pos(s11, 0).x - 250) < 0.5 && fabs(Pos(s11, 0).y - 248) < 0.5 && ps.keptPast == 0, P(Pos(s11, 0)));
-            Check(@"past edge: the full-screen window is not asked and stays centred", gKeptAsked == 0 && fabs(Pos(s11, 1).x - 597) < 0.5 && fabs(Pos(s11, 1).y - 417) < 0.5, [NSString stringWithFormat:@"asked %d %@", gKeptAsked, P(Pos(s11, 1))]);
+            Check(@"past edge: a recorded window whose kept top is above the stage area is kept inside as before (top under the bar, left at the edge)", fabs(Pos(s11, 0).x - 250) < 0.5 && fabs(Pos(s11, 0).y - 248) < 0.5 && ps.keptPast == 0, P(Pos(s11, 0)));
+            Check(@"past edge: the full-screen window is not asked and stays centred (the other one is)", gKeptAsked == 1 && fabs(Pos(s11, 1).x - 597) < 0.5 && fabs(Pos(s11, 1).y - 417) < 0.5, [NSString stringWithFormat:@"asked %d %@", gKeptAsked, P(Pos(s11, 1))]);
+        }
+        {   // (1.8.8.4) let go past the left edge at the screen's top edge while the menu bar hid itself (its card at 24), the bar back since (the stage area
+            // under it at 48): kept by the real rule under the bar again, past the left edge still (it was clamped fully inside: its top above the area)
+            SBContinuousExposeAutoLayoutSpace *s11b = [SBContinuousExposeAutoLayoutSpace new]; s11b.items = @[Item(-100, 224, 500, 400, NO)];
+            gKeptN = 1; gKeptAt[0] = CGPointMake(-100, 224); gKeptSize[0] = CGSizeMake(500, 400); gKeptAsked = 0; gRuleDragged = 0;
+            gRuleDesk = CGRectMake(0, 24, 1194, 834 - 117 - 2 - 24);   // (the desktop under the 24 pt bar again)
+            DMSM17Pass ps = DMSM17PassBegin(s11b, YES, cont);
+            ps.kept = TKeptRule;
+            CGRect a = ApplePass176(s11b, cont, pad, ours);
+            DMSM17PassEnd(&ps, a);
+            Check(@"past edge: recorded at the top edge while the bar hid itself, the bar back: under it again (card top 48), still 350 pt past the left edge", fabs(Pos(s11b, 0).x + 100) < 0.5 && fabs(Pos(s11b, 0).y - 248) < 0.5 && ps.keptPast == 1, [NSString stringWithFormat:@"%@ kept %d", P(Pos(s11b, 0)), ps.keptPast]);
         }
         {   // no container known: the callback is never asked (nothing to compare the record's screen with)
             SBContinuousExposeAutoLayoutSpace *s12 = [SBContinuousExposeAutoLayoutSpace new]; s12.items = @[Item(-100, 400, 500, 400, NO)];

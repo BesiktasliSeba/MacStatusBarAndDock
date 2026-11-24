@@ -16,7 +16,7 @@ build() {   # $1 the guard's header (as the test includes it), $2 the program
   clang -Wall -Wno-unused-function -iquote ../common -DMSBD_TEST_GUARD_H="\"$1\"" \
     -DMSBD_GUARD_FILE="\"$W/guard.txt\"" -DMSBD_GUARD_REPORTS="\"$W/reports\"" -DMSBD_GUARD_VERDICTS="\"$W/verdicts.txt\"" \
     -DMSBD_GUARD_RECORD="\"$W/record.txt\"" -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" -DMSBD_GUARD_NOTICE_LIB="\"$W/missing-notice.dylib\"" \
-    -DMSBD_GUARD_BLAME_LIB="\"$W/missing-blame.dylib\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$W/missing-crashmap.txt\"" \
+    -DMSBD_GUARD_BLAME_LIB="\"$W/missing-blame.dylib\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$W/missing-crashmap.txt\"" -DMSBD_CAUSE_FILE="\"$W/causes.txt\"" \
     -DMSBD_DISP_DOMAIN="\"com.besiktasliseba.test-crashguardboot.displays\"" \
     -o "$2" test-crashguardboot.c
 }

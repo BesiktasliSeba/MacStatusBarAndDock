@@ -1003,27 +1003,11 @@ __attribute__((noinline)) static void DMStickyTurnTo(id rfc, long page) { if (rf
     DM_FEATURE_MARK("sticky-note-bar-press");
     DMLog([NSString stringWithFormat:@"[notes] a %@ on note %@'s bar moved: the note's, not the page's", _trackPointer ? @"pointer" : @"finger", MSBDStickyShortId(_notes.track.noteId)]);
 }
-// A press that is the note's: every other gesture on its touch lets go (the Home Screen's own long press among them) and the page's scroll too.
+// A press that is the note's (or the desktop's: a pointer's press, Desktop.h -dm_pointerPressTake:): every other gesture on its touch lets go (the
+// Home Screen's own long press among them) and the page's scroll too.
 - (void)dm_noteTakeTouch:(UITouch *)t {
     for (UIGestureRecognizer *o in [t.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled) { o.enabled = NO; o.enabled = YES; }
     for (UIView *v = self.superview; v; v = v.superview) if ([v isKindOfClass:[UIScrollView class]]) { UIPanGestureRecognizer *pan = ((UIScrollView *)v).panGestureRecognizer; pan.enabled = NO; pan.enabled = YES; }
-}
-// A pointer's primary press on a note (1.8.8.2): the note's from the touch down. A pointer on a note only types in it (a click), moves it (a drag)
-// or opens its menu (a click held 0.75 s): never a page swipe, never the Home Screen's. Before, its other gestures kept the touch until our menu's
-// time, and on iPadOS 16 the Home Screen's own hold began its editing (jiggle mode) first, 0.7 s into a held click. Its other gestures let go now
-// and once more on the next turn of the main queue (UIKit gives a touch its gestures around SpringBoard's -sendEvent:: which comes first is
-// UIKit's). A secondary click keeps them (the note's own menu interaction opens its menu); a finger is not touched here (its quick swipe turns the
-// page; its menu at 0.45 s lets them go, -dm_holdCheck:).
-- (void)dm_notePointerPress:(UITouch *)t {
-    if (![self dm_noteTracked] || !_trackPointer || _trackSecondary || !t || t != _track) return;
-    _trackOwner = MSBDTouchDesktop;
-    [self dm_noteTakeTouch:t];
-    DM_FEATURE_MARK("sticky-note-pointer-press");
-    __weak DMDesktop *ws = self; __weak UITouch *wt = t; CFTimeInterval at = _trackAt;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        DMDesktop *s = ws; UITouch *x = wt;
-        if (s && x && s->_track == x && s->_trackAt == at && x.phase != UITouchPhaseEnded && x.phase != UITouchPhaseCancelled) [s dm_noteTakeTouch:x];
-    });
 }
 // A finger held still on a note's paper: at 0.2 s the note lifts (the dragged shadow), so the finger sees a move will drag it; back when the press
 // ends without a drag (the drop puts the look back after one).

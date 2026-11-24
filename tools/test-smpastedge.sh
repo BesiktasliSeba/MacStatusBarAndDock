@@ -37,10 +37,13 @@ sites() {   # $1 StatusBar.x, $2 SMEngineAPI.h, $3 crashmap-rules.txt, $4 quiet,
   # the drag: held at every move after its start (the desktop read at the start), before the move is drawn; the drop recorded after its snap and the
   # behind-the-Dock mark, before the place is asked for
   t=$(fn "$X" "$PAN")
-  if echo "$t" | awk '/NSString \*w = _key \?: _bundle;/{w=NR} /^    BOOL followed = _follows;$/{f=NR} /^    if \(g.state == UIGestureRecognizerStateBegan\) DMSMPastEdgeDragBegin\(card\);$/{b=NR} /^    else t = DMSMPastEdgeDragKept\(card, t\);$/{k=NR}
+  # (1.8.8.4: the drag's start on a title bar slid down with the menu bar moves the window down to it first: the travel carries it from there on,
+  #  added to the travel the follow worked out -- 1.8.8.3's, before it: the follow sets the travel anew from the touch-down)
+  if echo "$t" | awk '/NSString \*w = _key \?: _bundle;/{w=NR} /^    BOOL followed = _follows;$/{f=NR} /^    if \(g.state == UIGestureRecognizerStateBegan\) gSMDragSlid = DMAutoHideSMBake\(self\);$/{z=NR} /^    t.y \+= gSMDragSlid;$/{y=NR}
+       /^    if \(g.state == UIGestureRecognizerStateBegan\) DMSMPastEdgeDragBegin\(card\);$/{b=NR} /^    else t = DMSMPastEdgeDragKept\(card, t\);$/{k=NR}
        /card.transform = CGAffineTransformMakeTranslation\(t.x, t.y\);/{if(!m)m=NR} /BOOL snapped = DMSMSnapMoveTarget\(w, card, t, &at\);/{s=NR} /if \(endsAt > line \+ 4.0\)/{e=NR}
        /DMSMPastEdgeDropped\(w, scn, droppedOnScreen, snapped, at, /{d=NR} /DMSMSetWindowGeometry\(w, /{if(!g)g=NR}
-       END{exit !(w && f > w && b > f && b - f < 45 && k == b + 1 && m > k && s > m && e > s && d > e && g > d)}'; then
+       END{exit !(w && f > w && z > f && y == z + 1 && b == y + 3 && b - f < 45 && k == b + 1 && m > k && s > m && e > s && d > e && g > d)}'; then
     [ -n "$q" ] || echo "PASS  StatusBar.x: -dm_pan: holds the drag at every move after its start, and records the drop after its snap and the Dock's mark, before the place is asked"
   else [ -n "$q" ] || echo "FAIL  StatusBar.x: -dm_pan: does not hold the drag or record the drop where it should"; n=$((n + 1)); fi
   # the follow (1.8.8.3): the bar's touch filter notes where a touch goes down after the pointer's resize band (never for a touch it refuses); the
@@ -73,7 +76,7 @@ sites() {   # $1 StatusBar.x, $2 SMEngineAPI.h, $3 crashmap-rules.txt, $4 quiet,
   # full-screen one, its top under the area)
   if awk '/^- \(CGRect\)_performAutoLayoutWithSpace:\(id\)space configuration:\(id\)cfg stageInset:\(UIEdgeInsets\)inset \{/{f=1} f&&/DMSM17Pass pass = DMSM17PassBegin\(space, haveContainer, container\);/{b=NR}
           f&&/^    pass.kept = DMSMPastEdgeHeldAt;/{k=NR} f&&/int moved = DMSM17PassEnd\(&pass, area\);/{e=NR} f&&/^}/{exit} END{exit !(b && k == b + 1 && e > k)}' "$X" \
-     && grep -qF "BOOL past = ![en[3] boolValue] && pass->kept && pass->container.width > 0 && pass->container.height > 0 && p.y - z.height / 2.0 >= CGRectGetMinY(area) - 0.5 && pass->kept(p, z, pass->container, &keep) && isfinite(keep.x) && isfinite(keep.y);" "$E" \
+     && grep -qF "BOOL past = ![en[3] boolValue] && pass->kept && pass->container.width > 0 && pass->container.height > 0 && pass->kept(p, z, pass->container, &keep) && isfinite(keep.x) && isfinite(keep.y) && keep.y - z.height / 2.0 >= CGRectGetMinY(area) - 0.5;" "$E" \
      && grep -qF 'CGPoint want = [en[3] boolValue] ? p : past ? keep : DMSMClampCenter(p, z, area);' "$E"; then
     [ -n "$q" ] || echo "PASS  StatusBar.x / SMEngineAPI.h: iPadOS 17 and 18's pass gets the lookup and keeps a recorded window (not full screen, its top under the area)"
   else [ -n "$q" ] || echo "FAIL  StatusBar.x / SMEngineAPI.h: iPadOS 17 and 18's pass does not keep a recorded window as built"; n=$((n + 1)); fi
@@ -188,7 +191,8 @@ if [ -z "$SPE_SB_X$SPE_H" ]; then
   mtf "the record not following our keep" X 's/            gSMPastEdge\[key\] = @\[\[NSValue valueWithCGPoint:k\], r\[1\], r\[2\]\];/            (void)key;/'
   mtf "16: the vertical hook does not put it back" X 's/static void DMSMConstrainV16\(id self, SEL _cmd, id m, CGRect area\) \{ NSArray \*held = DMSMPastEdgeBefore16\(m, area\); o_SMConstrainV\(self, _cmd, m, area\); DMSMConstrainEdges16\(m, area, 1\); DMSMPastEdgeAfter16\(m, held\); \}/static void DMSMConstrainV16(id self, SEL _cmd, id m, CGRect area) { o_SMConstrainV(self, _cmd, m, area); DMSMConstrainEdges16(m, area, 1); }/'
   mtf "16: the recorded window not put back after Apple's step" X 's/(        CGPoint want = \[e\[1\] CGPointValue\], now = )/        continue;\n$1/'
-  mtf "16: a window with its top above the area kept there" X 's/ \|\| c.y - s.height \/ 2.0 < CGRectGetMinY\(area\) - 0.5 \|\| !DMSMPastEdgeHeld/ || !DMSMPastEdgeHeld/'
+  mtf "16: a window with its kept top above the area kept there" X 's/ \|\| k\.y - s\.height \/ 2\.0 < CGRectGetMinY\(area\) - 0\.5\) continue;/) continue;/'
+  mtf "16: a window recorded at the top edge (the bar hiding itself then) not kept under the bar again (1.8.8.3's gate)" X 's/if \(!isfinite\(c\.x\) \|\| !isfinite\(c\.y\) \|\| !DMSMPastEdgeHeldAt/if (!isfinite(c.x) || !isfinite(c.y) || c.y - s.height \/ 2.0 < CGRectGetMinY(area) - 0.5 || !DMSMPastEdgeHeldAt/'
   mtf "16: the lone window's flag left down" X 's/        gSMLoneCenterNext = lone;\n        DM_FEATURE_MARK\("sm-past-edge-kept16"\);/        DM_FEATURE_MARK("sm-past-edge-kept16");/'
   mtf "17: the pass not handed the lookup" X 's/^    pass.kept = DMSMPastEdgeHeldAt;[^\n]*\n//m'
   mtf "17: a full-screen window asked too" E 's/BOOL past = !\[en\[3\] boolValue\] && pass->kept/BOOL past = pass->kept/'

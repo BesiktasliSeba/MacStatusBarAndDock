@@ -30,6 +30,8 @@ static BOOL DMSMSetWindowGeometry(NSString *key, CGPoint center, CGSize size) { 
 static void DMSMPastEdgeDragBegin(UIView *card) { (void)card; }
 static CGPoint DMSMPastEdgeDragKept(UIView *card, CGPoint t) { (void)card; return t; }
 static void DMSMPastEdgeDropped(NSString *key, UIScreen *scn, CGRect droppedOnScreen, BOOL snapped, CGPoint at, CGPoint plain) { (void)key; (void)scn; (void)droppedOnScreen; (void)snapped; (void)at; (void)plain; }
+// (1.8.8.4: a drag that starts on a title bar slid down with the menu bar moves the window down to it first -- test-autohidetop.sh; no bar is slid here)
+static CGFloat DMAutoHideSMBake(UIView *bar) { (void)bar; return 0.0; }
 
 // ---- the iPad's screen: its size in points, its coordinate space the (full-screen) window's
 @interface KScreen : UIScreen

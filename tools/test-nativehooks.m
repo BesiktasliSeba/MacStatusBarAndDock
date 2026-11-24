@@ -79,6 +79,8 @@ static UIView *DMNativeHost(void) { return gKHost; }
 static void DMNativeUpdateRotation(void) {}
 static CGRect DMNativeClamp(CGRect f, CGSize minSize) { return f; }
 static CGRect DMNativeDockTarget(void) { return CGRectNull; }
+static UIView *gNativeRotator;   // (none here: a window back from the Recent Windows Strip grows out of the Dock target as before)
+static CGRect DMRStripNativeFlight(DMNativeWindow *w, BOOL into) { return CGRectNull; }   // (the Recent Windows Strip, 1.8.8.4: switched off here)
 static BOOL MSBReduceMotion(void) { return YES; }
 static void MSBAnimate(NSTimeInterval d, NSTimeInterval delay, CGFloat damping, UIViewAnimationOptions o, void (^a)(void), void (^c)(BOOL)) { if (a) a(); if (c) c(YES); }
 static CGRect DMNativeDesktop(void) { return CGRectMake(0, 24, 1180, 760); }

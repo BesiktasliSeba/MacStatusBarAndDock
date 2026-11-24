@@ -164,6 +164,37 @@ static inline CGRect MSBDDockSideHomeListFrame(CGRect page, int side, double roo
     }
     return CGRectOffset(page, side == MSBDDockLeft ? room * fr / free : -room * fl / free, 0);
 }
+// The same with the Recent Windows Strip's band too (statusbar/RecentStrip.h, 1.8.8.4: the Home Screen keeps it free, its icons beside it): room on
+// both sides, the Dock's on its side and the strip's on the other (the strip is never on the Dock's side, RecentStripRule.h MSBDRStripOnRight). The
+// rooms come out of the free space beside the icons in each side's share, the layout's shape kept; with no free space for both, the list is the room
+// between them. With no strip room the answer is MSBDDockSideHomeListFrame's own, byte for byte (side Dock users see nothing new).
+static inline CGRect MSBDHomeListFrameTwoSided(CGRect page, int side, double room, bool stripRight, double stripRoom, double freeLeft, double freeRight) {
+    if (!(stripRoom > 0.0) || !isfinite(stripRoom)) return MSBDDockSideHomeListFrame(page, side, room, freeLeft, freeRight);
+    if (CGRectIsNull(page) || CGRectIsEmpty(page)) return page;
+    double dock = ((side == MSBDDockLeft || side == MSBDDockRight) && room > 0.0 && isfinite(room)) ? room : 0.0;
+    double rl = (side == MSBDDockLeft ? dock : 0.0) + (stripRight ? 0.0 : stripRoom), rr = (side == MSBDDockRight ? dock : 0.0) + (stripRight ? stripRoom : 0.0);
+    double total = rl + rr;
+    double fl = isfinite(freeLeft) ? fmax(0.0, freeLeft) : 0.0, fr = isfinite(freeRight) ? fmax(0.0, freeRight) : 0.0, free = fl + fr;
+    if (free - total < 2.0 * kMSBDDockSideHomeKeep) {   // (no room beside both for the icons at their size)
+        CGRect f = page;
+        f.size.width = fmax(1.0, f.size.width - total);
+        f.origin.x += rl;
+        return f;
+    }
+    // (each side's free space shrinks by the same share of it, total / free: the list moves so its icons start rl plus the left's new free space in)
+    return CGRectOffset(page, rl - fl * total / free, 0);
+}
+// The strip's side on a Home Screen page of this shape: the right edge with the Dock at Left where the Dock stands at that side (a landscape page),
+// else the left -- statusbar/RecentStrip.h's own rule (RecentStripRule.h MSBDRStripOnRight of the Dock at Left, the Dock's side from the screen's
+// shape). Taken from the page's own shape, so a turn lays the pages out once, for their new shape (the review of 1.8.8.4: with the Dock at Left the
+// side handed on by the strip's last 0.2 s step was the old shape's, so SpringBoard's own layout of the turn put the icons beside the band on the
+// wrong side and the band's next step moved them again).
+static inline bool MSBDHomeStripOnRight(int position, double width, double height) { return MSBDDockSideFor(position, width, height) == MSBDDockLeft; }
+// Where a Home Screen frame on the screen reaches into the strip's band (the safety check, as MSBDDockSideHomeUnder for the Dock).
+static inline bool MSBDHomeUnderStrip(CGRect r, double screenWidth, bool stripRight, double stripRoom) {
+    if (!(stripRoom > 0.0) || CGRectIsNull(r) || CGRectIsEmpty(r)) return false;
+    return stripRight ? CGRectGetMaxX(r) > screenWidth - stripRoom + 0.25 : CGRectGetMinX(r) < stripRoom - 0.25;
+}
 // The layout's free space on the screen's left and right from its insets: as they are, or swapped where the list lays out right to left, mirrored.
 static inline void MSBDDockSideHomeFree(double insetLeft, double insetRight, bool rightToLeft, double *freeLeft, double *freeRight) {
     if (freeLeft) *freeLeft = rightToLeft ? insetRight : insetLeft;

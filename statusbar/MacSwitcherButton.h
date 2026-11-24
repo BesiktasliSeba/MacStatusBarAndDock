@@ -108,18 +108,39 @@ static void DMMSWHookHomeButton(void) {
         other.count ? [NSString stringWithFormat:@"; left alone (another signature): %@", [other componentsJoinedByString:@", "]] : @""]);
 }
 
-// The tick (StatusBar.x, after DMMSWTick): the view goes when the Home Screen comes by any other way (the Home gesture, the app quitting) -- it was
-// opened over an app that is no longer in front. Read every tick only while the view is open.
+// The tick (StatusBar.x, after DMMSWTick): the view goes when the Home Screen comes by any other way (the Home gesture, the app quitting by itself)
+// -- it was opened over an app that is no longer in front. Not when the app last in front was quit from the view itself (Swipe Up to Quit,
+// MacSwitcher.h DMMSWFlickQuit): that Home is the view's own, the view stays (MSWFlick.h MSBDMSWHomeCloses). After it the view is as one opened
+// over the Home Screen until the next of its own windows comes in front -- one in the view, or one quit from it whose quit is on its way --: then
+// as one opened over that window, so a Home by another way, or that app quitting by itself, closes it again (1.8.8.4 review: with a tick that saw
+// no app in front between the quit app and the next window, the view stayed at every later Home; an app of another display's coming in front
+// is none of the view's). Read every tick only while the view is open. (tools/test-mswquithome.sh runs this function through state sequences)
 static void DMMSWHomeTick(void) {
-    static BOOL wasOpen = NO;
-    static NSString *frontAtOpen = nil;
+    static BOOL wasOpen = NO, rebase = NO;
+    static NSString *frontAtOpen = nil, *lastFront = nil;
     BOOL open = DMMSWIsOpen() && !gMSWClosing;
-    if (!open) { wasOpen = NO; frontAtOpen = nil; return; }
+    if (!open) { wasOpen = NO; rebase = NO; frontAtOpen = nil; lastFront = nil; return; }
     NSString *front = [DMFrontApp() bundleIdentifier];
-    if (!wasOpen) { wasOpen = YES; frontAtOpen = front; return; }
-    if (CACurrentMediaTime() - gMSWOwnHomeAt < 3.0) { frontAtOpen = front; return; }   // (the Mac Switcher sent the app Home itself: the view stays)
-    if (frontAtOpen.length && !front.length && !gMSWSwitching) {
+    if (!wasOpen) { wasOpen = YES; frontAtOpen = front; lastFront = front; return; }
+    if (rebase && front.length) {   // (after a quit's own Home: the next of the view's own windows in front)
+        BOOL mine = [gMSWQuitHere containsObject:front];
+        for (DMMSWTile *t in gMSWTiles) if (!mine && [DMSMKeyBundle(t.bundle) isEqualToString:front]) mine = YES;
+        if (mine) { frontAtOpen = front; rebase = NO; }
+    }
+    NSString *was = lastFront;   // (the app seen in front last, before this tick)
+    if (front.length) lastFront = front;
+    BOOL own = CACurrentMediaTime() - gMSWOwnHomeAt < 3.0;   // (the Mac Switcher sent the app Home itself)
+    BOOL quitHere = was.length && [gMSWQuitHere containsObject:was];
+    if (MSBDMSWHomeCloses(frontAtOpen.length > 0, front.length > 0, gMSWSwitching, own, quitHere)) {
         DMLog([NSString stringWithFormat:@"[macswitcher] the Home Screen came (%@ is no longer in front): the view closes", frontAtOpen]);
         DMMSWClose(nil, NO);
+        return;
+    }
+    if (own) { frontAtOpen = front; return; }   // (the view stays)
+    if (frontAtOpen.length && !front.length && !gMSWSwitching && quitHere) {
+        DM_FEATURE_MARK("mac-switcher-quit-keeps-view");
+        DMLog([NSString stringWithFormat:@"[macswitcher] the Home Screen came: %@, in front, was quit from the view -- its Home, the view stays", was]);
+        frontAtOpen = nil; rebase = YES;   // (as a view opened over the Home Screen, until the next of its windows comes in front)
+        DMMSWFocusAgain(@"the app in front was quit from the view");   // (that Home re-chose the keyboard focus: the view takes it again)
     }
 }
