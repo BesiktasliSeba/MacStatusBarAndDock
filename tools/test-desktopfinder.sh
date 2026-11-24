@@ -30,4 +30,6 @@ check "a name edited on the desktop no longer makes the native windows inactive;
   "! fnd '- (void)dm_beginRename:(NSString *)path {' | grep -q 'DMNativeSetActive(nil)' && fnd '- (void)dm_beginRename:(NSString *)path {' | grep -q 'if (!typeIn.isKeyWindow) \\[typeIn makeKeyWindow\\];' \
    && grep -q '^- (BOOL)dm_hasKeys { return (_hasKeys || _renameField || \\[self dm_noteActive\\] || (!gNativeActive && !DMActiveApp()))' $D \
    && fnd '- (BOOL)dm_handleKey:(UIKey *)key {' | grep -q 'if (c == UIKeyboardHIDUsageKeyboardReturnOrEnter && none) { \\[self dm_endRename:YES\\]; return YES; }'"
+check "1.8.8.3: a key of our own on-screen keyboard is a key press, never a click on the native window under it: DMNativeTouchBegan returns for it before the hit test (the Downloads panel's search over an active Finder window lost its first key and its keyboard, 16.7.7)" \
+  "fnn '$TB' | awk '/^    if \\(DMPointOnOwnKeyboard\\(p\\)\\) \\{/{a=NR} a&&/^        return;/&&!b{b=NR} /DMNativeLayerHitTest\\(/{c=NR} END{exit !(a && b > a && c > b)}' && ! fnn '$TB' | grep -q 'gNativeFocusLock && DMPointOnOwnKeyboard'"
 [ $fails = 0 ] && echo "test-desktopfinder: all checks pass" || { echo "test-desktopfinder: checks FAILED"; exit 1; }

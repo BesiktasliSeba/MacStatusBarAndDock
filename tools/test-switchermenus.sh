@@ -28,8 +28,10 @@ build() {
     fnf '__attribute__((noinline)) static BOOL DMMenusOfOursShown(void) {' "$2" > "$d/shown.inc"
     fnf '__attribute__((visibility("default"))) BOOL MSBDDownloadsPanelShown(void) {' "$4" > "$d/dlshown.inc"
     fnf 'static void DMMSWStartPicture(id gesture) {' "$3" > "$d/start.inc"
+    fnf '__attribute__((noinline)) static void DMSwitcherEnvCloseMenus(long long mode) {' "$2" > "$d/env.inc"
     [ -s "$d/open.inc" ] && [ -s "$d/tick.inc" ] && [ -s "$d/start.inc" ] || { echo "      (the open, the tick's block or the gesture's start picture is not in the source as one piece)"; return 1; }
     local hs=; [ -s "$d/shown.inc" ] && hs=-DHAVE_SHOWN=1
+    [ -s "$d/env.inc" ] && hs="$hs -DHAVE_ENV=1"
     clang -fobjc-arc -DDEBUG=1 $hs -Wall -Wno-unused-function -Wno-unused-variable -I"$d" -I../statusbar -framework Foundation -o "$d/tsm" test-switchermenus.m > "$d/build.txt" 2>&1
 }
 # sites <StatusBar.x> <MacSwitcher.h> <Downloads.m> [quiet]: the site checks; returns how many failed
@@ -53,12 +55,12 @@ sites() {
     ck "  ... nor the gesture's start picture when a menu of ours was on the screen at that start (B71 review)" \
        "grep -qF 'BOOL liftable = byGesture && gMSWLiftPic && gMSWLiftPicId == DMMSWCurId() && (CACurrentMediaTime() - gMSWLiftPicAt < 2.0 || (DMMSWGestureGrace() && gMSWLiftPicGen == gMSWTrackPicGen));' $W/o \
         && grep -qF 'BOOL liftMenu = liftable && gMSWLiftPicMenu;' $W/o && [ \$(grep -c 'gMSWLiftPicMenu' $W/o) = 1 ]"
-    ck "every place the gesture's start picture is kept marks it, from DMMenusOfOursShown read before that picture is asked for (B71 review)" \
+    ck "every place the gesture's start picture is kept marks it, from DMMenusOfOursShown read before that picture is asked for (B71 review; its third reader: the App Switcher's event close, 1.8.8.3)" \
        "[ \$(grep -cE 'gMSWLiftPic = (pic|gMSWTrackPic);' $MS) = 3 ] && [ \$(grep -E 'gMSWLiftPic = (pic|gMSWTrackPic);' $MS | grep -c 'gMSWLiftPicMenu = ours;') = 3 ] \
         && [ \$(grep -c 'gMSWLiftPicMenu = ' $MS) = 4 ] && grep -q '^static BOOL gMSWLiftPicMenu = NO; ' $MS \
         && fnf 'static void DMMSWStartPicture(id gesture) {' $MS | awk '/^    BOOL ours = DMMenusOfOursShown\(\);/{a=NR} /DMMSWScreenPictureAsync\(/{b=NR} END{exit !(a && b > a)}' \
         && fnf 'static void DMMSWTrackBegin(id gesture) {' $MS | awk '/^    BOOL ours = DMMenusOfOursShown\(\);/{a=NR} /^    BOOL asked = /{b=NR} /gMSWLiftPic = gMSWTrackPic;/{c=NR} END{exit !(a && b > a && c > b)}' \
-        && [ \$(cat ../statusbar/*.h ../statusbar/*.x | grep -c 'DMMenusOfOursShown()') = 2 ]"
+        && [ \$(cat ../statusbar/*.h ../statusbar/*.x | grep -c 'DMMenusOfOursShown()') = 3 ] && fnf '__attribute__((noinline)) static void DMSwitcherEnvCloseMenus(long long mode) {' $SB | grep -q 'DMMenusOfOursShown()'"
     ck "DMMenusOfOursShown: out of line in the close's section, gOverlay and the Dock part's MSBDDownloadsPanelShown by dlsym; the Dock part exports it (showDownloads)" \
        "fnf '__attribute__((noinline)) static BOOL DMMenusOfOursShown(void) {' $SB > $W/s && [ \$(grep -c '^__attribute__((noinline)) static BOOL DMMenusOfOursShown(void) {' $SB) = 1 ] \
         && awk '/^__attribute__\(\(noinline\)\) static BOOL DMCloseMenusForSwitcher\(/{c=NR} /^__attribute__\(\(noinline\)\) static BOOL DMMenusOfOursShown\(/{s=NR} /^static void DMCloseOverlaysForScreenOff\(void\) \{/{d=NR} END{exit !(c && s > c && d > s)}' $SB \
@@ -70,6 +72,13 @@ sites() {
     ck "the Dock part exports its stack panel's close (default visibility, in Downloads.m: the crash map's showDownloads), its own animated close" \
        "fnf '__attribute__((visibility(\"default\"))) BOOL MSBDDownloadsPanelSwitcherClose(const char *which) {' $D > $W/d && grep -qF 'if (![p isOpen]) return NO;' $W/d && grep -qF '[p dismissAnimated:YES];' $W/d \
         && grep -q '^file DockMagnification \\^Downloads\\\\.m\\$ showDownloads$' crashmap-rules.txt"
+    ck "1.8.8.3: iPadOS's App Switcher on its way closes them at its transition event: the hook calls DMSwitcherEnvCloseMenus with the mode it sets, the close is out of line in the close's section" \
+       "fnf '- (void)setToEnvironmentMode:(long long)mode {' $SB | grep -q '^    DMSwitcherEnvCloseMenus(mode);' \
+        && awk '/^__attribute__\\(\\(noinline\\)\\) static BOOL DMMenusOfOursShown\\(/{s=NR} /^__attribute__\\(\\(noinline\\)\\) static void DMSwitcherEnvCloseMenus\\(long long mode\\) \\{/{e=NR} /^static void DMCloseOverlaysForScreenOff\\(void\\) \\{/{d=NR} END{exit !(s && e > s && d > e)}' $SB \
+        && fnf '__attribute__((noinline)) static void DMSwitcherEnvCloseMenus(long long mode) {' $SB > $W/e && grep -qF 'if (mode != 2) return;' $W/e && grep -qF 'dispatch_async(dispatch_get_main_queue(), ^{' $W/e \
+        && grep -qF 'if (!DMMenusOfOursShown() || DMMSWIsOpen() || (gMSWOn && !DMMSWStockOnce())) return;' $W/e && grep -qF '(void)DMCloseMenusForSwitcher(@\"the App Switcher\");' $W/e"
+    ck "  ... the event hook is installed in every setup (from the 0.2 s watcher's first run), not only with a window engine" \
+       "fnf 'static void DMSyncWindowsForLibrary(void) {' $SB | grep -q '^    if (!gDMWatcherStarted) DMInitSwitcherLog();'"
     ck "the release markers: switcher-closes-menus and switcher-closes-stack in the code that closes" \
        "grep -qF 'DM_FEATURE_MARK(\"switcher-closes-menus\");' $W/c && grep -qF 'DM_FEATURE_MARK(\"switcher-closes-stack\");' $W/d"
     return $n
@@ -128,6 +137,11 @@ if [ -z "${MSB_NOMTF:-}" ]; then
     mtf "the menu removed at once instead of the one close" sb 's/(BOOL menu = gOverlay != nil;\n    if \(menu\) \{\n.*?\n.*?\n)        DMCloseOverlay\(\);/$1        gOverlay = nil;/s'
     mtf "the debug keep not honoured" sb 's/    if \(DMTestFlag\("\/tmp\/msb-overlay-keep"\)\) return NO;   \/\/[^\n]*\n//'
     mtf "the tick's App Switcher close left as DMCloseOverlay alone" sb 's/if \(appSwitcher\) DMCloseMenusForSwitcher\(systemUI\);/if (NO) DMCloseMenusForSwitcher(systemUI);/'
+    mtf "iPadOS's App Switcher on its way: no close at its event (1.8.8.3)" sb 's/^    DMSwitcherEnvCloseMenus\(mode\);\n//m'
+    mtf "the event's close inside SpringBoard's call, not on the next turn" sb 's/(static void DMSwitcherEnvCloseMenus\(long long mode\) \{\n    if \(mode != 2\) return;\n)    dispatch_async\(dispatch_get_main_queue\(\), \^\{\n/$1    ({\n/'
+    mtf "the event's close taking the Mac Switcher's menus (on, nothing asked)" sb 's/if \(!DMMenusOfOursShown\(\) \|\| DMMSWIsOpen\(\) \|\| \(gMSWOn && !DMMSWStockOnce\(\)\)\) return;/if (!DMMenusOfOursShown() || DMMSWIsOpen()) return;/'
+    mtf "the event's close for every transition, not the App Switcher's only" sb 's/(static void DMSwitcherEnvCloseMenus\(long long mode\) \{\n)    if \(mode != 2\) return;\n/$1/'
+    mtf "the event hook installed only with a window engine, as before" sb 's/^    if \(!gDMWatcherStarted\) DMInitSwitcherLog\(\);[^\n]*\n//m'
     mtf "the tick closing every system UI with the switchers' close" sb 's/if \(appSwitcher\) DMCloseMenusForSwitcher\(systemUI\);/if (YES) DMCloseMenusForSwitcher(systemUI);/'
     mtf "the Dock part's close without its animation" d 's/(DM_FEATURE_MARK\("switcher-closes-stack"\);\n.*?\n)    \[p dismissAnimated:YES\];/$1    [p dismissAnimated:NO];/s'
     mtf "the Dock part's close saying it closed a closed panel" d 's/(BOOL MSBDDownloadsPanelSwitcherClose\(const char \*which\) \{\n.*?\n)    if \(!\[p isOpen\]\) return NO;/$1    if (![p isOpen]) return YES;/s'

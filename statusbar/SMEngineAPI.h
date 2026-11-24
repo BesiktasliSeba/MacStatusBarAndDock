@@ -1593,9 +1593,13 @@ static CGPoint DMSMClampCenter(CGPoint c, CGSize s, CGRect area) {
 // the screen edge padding -- a 1194 pt window ends 48 pt left and up), and only re-centres it when it is the stage's only window. Apple's own full
 // screen is a stage of its own; ours shares the stage with the windows (they can come in front of it), so with windows around it ours was moved.
 // Anything unreadable is left out (Apple's result stays for that window).
-typedef struct { NSArray *before; id lone; BOOL loneHidden; } DMSM17Pass;
+// A window the user let go partly past the screen's edge (1.8.8.3, SMPastEdge.h): `kept`, when the hook hands one over, answers whether a window at
+// this centre and size, in a container of this size, stands at such a place (or is such a window a resize by hand is changing), and where it keeps it
+// (its last argument: that place by the rule against the desktop as it is now, StatusBar.x DMSMPastEdgeHeldAt); that window goes there, not clamped
+// into the stage area (its top still under the area's top: else clamped as any other). keptPast counts them for the caller.
+typedef struct { NSArray *before; id lone; BOOL loneHidden; CGSize container; BOOL (*kept)(CGPoint, CGSize, CGSize, CGPoint *); int keptPast; } DMSM17Pass;
 static DMSM17Pass DMSM17PassBegin(id space, BOOL haveContainer, CGRect container) {
-    DMSM17Pass pass = { nil, nil, NO };
+    DMSM17Pass pass = { nil, nil, NO, haveContainer ? container.size : CGSizeZero, NULL, 0 };
     NSArray *items = DMSMSpaceItems(space);
     NSMutableArray *before = [NSMutableArray array];
     for (id it in items) {
@@ -1620,7 +1624,11 @@ static int DMSM17PassEnd(DMSM17Pass *pass, CGRect area) {
     for (id e in pass->before) {
         if (e == [NSNull null]) continue;
         NSArray *en = e;
-        CGPoint p = [en[1] CGPointValue], want = [en[3] boolValue] ? p : DMSMClampCenter(p, [en[2] CGSizeValue], area), now;   // (full screen: the container's centre, not clamped into the stage area)
+        CGPoint p = [en[1] CGPointValue], now, keep = p; CGSize z = [en[2] CGSizeValue];
+        // (a window the user let go past an edge, at that place: kept where the callback keeps it, its top under the area's top)
+        BOOL past = ![en[3] boolValue] && pass->kept && pass->container.width > 0 && pass->container.height > 0 && p.y - z.height / 2.0 >= CGRectGetMinY(area) - 0.5 && pass->kept(p, z, pass->container, &keep) && isfinite(keep.x) && isfinite(keep.y);
+        if (past) pass->keptPast++;
+        CGPoint want = [en[3] boolValue] ? p : past ? keep : DMSMClampCenter(p, z, area);   // (full screen: the container's centre, not clamped into the stage area)
         if (!DMSMItemPosition(en[0], &now) || (fabs(now.x - want.x) < 0.5 && fabs(now.y - want.y) < 0.5)) continue;
         if (DMSMItemSetPosition(en[0], want)) moved++;
     }

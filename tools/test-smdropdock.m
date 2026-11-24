@@ -25,6 +25,11 @@ static BOOL gKSnap; static CGPoint gKSnapAt, gKSnapT; static int gKSnapAsked;
 static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *at) { gKSnapAsked++; gKSnapT = t; if (gKSnap) *at = gKSnapAt; return gKSnap; }
 static NSString *gKPlaceKey; static CGPoint gKPlace; static int gKPlaces;
 static BOOL DMSMSetWindowGeometry(NSString *key, CGPoint center, CGSize size) { gKPlaces++; gKPlaceKey = key; gKPlace = center; return YES; }
+// (1.8.8.3: the drag held to the rule for a window past the screen's edges, and the drop's record of one -- the real ones run in test-smpastedge.sh;
+//  here the drag goes as it is and nothing is recorded, so this test's drops are as before)
+static void DMSMPastEdgeDragBegin(UIView *card) { (void)card; }
+static CGPoint DMSMPastEdgeDragKept(UIView *card, CGPoint t) { (void)card; return t; }
+static void DMSMPastEdgeDropped(NSString *key, UIScreen *scn, CGRect droppedOnScreen, BOOL snapped, CGPoint at, CGPoint plain) { (void)key; (void)scn; (void)droppedOnScreen; (void)snapped; (void)at; (void)plain; }
 
 // ---- the iPad's screen: its size in points, its coordinate space the (full-screen) window's
 @interface KScreen : UIScreen

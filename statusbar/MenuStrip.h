@@ -302,13 +302,15 @@ static double DMStripAlong(UIView *fg, CGPoint t, BOOL scroll) {
     double x = st && st->rtl ? -t.x : t.x;
     return (!scroll || fabs(t.x) >= fabs(t.y)) ? x : t.y;
 }
-// Where a swipe or a scroll began, in the copy's own coordinates (asked as it begins). A finger: where it is. A trackpad's two-finger scroll
-// (moving: the continuous scroll's pan): where the pointer is, and it stays there -- UIKit moves that pan's location with its translation, as a
-// finger dragging would (1.8.8.2, seen on iPadOS 17.5.1: a sideways scroll over Go, at 393, began at 353, inside the strip's room, and moved the
-// strip; a scroll up or down at y 18 began at -22 or 58, off the bar, and never moved it): the location less the translation so far. A mouse
-// wheel's pan: its location as UIKit gives it, as before (the same pass: its notches over the strip, up and down, began there and moved it one
-// title a notch; its location less a notch's translation could fall off the bar's few points of height).
-__attribute__((noinline)) static CGPoint DMStripBeganAt(UIView *fg, UIPanGestureRecognizer *g, BOOL moving) {
+// Where a swipe or a scroll began, in the copy's own coordinates (asked as it begins). A finger: where it is. A scroll -- a trackpad's two fingers,
+// a mouse wheel -- happens where the pointer is, and the pointer stays there: its place over the copy, as the copy's hover sees it (pointerIn: the
+// pointer over the copy now; 1.8.8.3). Without it (no pointer over the copy: a scroll sent with no pointer there), as 1.8.8.2: the continuous
+// scroll's pan (moving) from its location less its translation -- UIKit moves that pan's location with the scroll, as a finger dragging would
+// (iPadOS 17.5.1: a sideways scroll over Go, at 393, asked at 353, inside the strip's room) -- and the wheel's pan from its location. That location
+// less the translation was still not where it began: the translation leaves out the pan's first ~10 pt, so a sideways scroll beginning 3 to 7 pt
+// past the room's end (Go's button at 373) was read inside it and moved the strip (17.5.1, x 366 and 370 with the room ending at 363).
+__attribute__((noinline)) static CGPoint DMStripBeganAt(UIView *fg, UIPanGestureRecognizer *g, BOOL moving, BOOL pointerIn, CGPoint pointerAt) {
+    if (pointerIn) return pointerAt;   // (a scroll with the pointer over the copy: where the pointer is)
     CGPoint p = [g locationInView:fg];
     if (!moving) return p;
     CGPoint t = [g translationInView:fg];
@@ -334,20 +336,35 @@ __attribute__((noinline)) static BOOL DMStripCanBegin(UIView *fg, CGPoint p, CGP
 @interface DMStripHandler : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIView *fg;
 @property (nonatomic, weak) UIPanGestureRecognizer *touch, *swipe, *wheel;
+@property (nonatomic, weak) UIHoverGestureRecognizer *hover;
 @property (nonatomic) int began;
 @property (nonatomic) CFTimeInterval wheelAt;
+@property (nonatomic) BOOL pointerIn;     // (the pointer over the copy now, and where: its hover, 1.8.8.3 -- a scroll is judged where it is)
+@property (nonatomic) CGPoint pointerAt;
 @end
 @implementation DMStripHandler
+// (the hover beside every other recognizer on the bar -- the traffic lights', the TV bar's auto-hide: it only reads where the pointer is)
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)o { return g == self.hover; }
+- (void)hovered:(UIHoverGestureRecognizer *)g {
+    UIView *fg = self.fg;
+    BOOL in = fg && (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged);
+    self.pointerIn = in;
+    if (in) self.pointerAt = [g locationInView:fg];
+}
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    // (the hover reads the pointer wherever it comes onto the copy -- past the room too, over Go or the clock, where a scroll must not begin: a
+    //  hover is a touch to UIKit, and one refused where it came on is never followed on that visit; review 1.8.8.3)
+    if (g == self.hover) return YES;
     UIView *fg = self.fg;
     return fg && DMStripInRoom(fg, [touch locationInView:fg]);
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
+    if (g == self.hover) return YES;   // (the pointer's place, only read)
     UIView *fg = self.fg;
     if (!fg) return NO;
     BOOL finger = g == self.touch;
     CGPoint v = finger ? [(UIPanGestureRecognizer *)g velocityInView:fg] : CGPointZero;
-    if (!DMStripCanBegin(fg, DMStripBeganAt(fg, (UIPanGestureRecognizer *)g, g == self.swipe), v, finger)) return NO;   // (a scroll: where the pointer is)
+    if (!DMStripCanBegin(fg, DMStripBeganAt(fg, (UIPanGestureRecognizer *)g, g == self.swipe, !finger && self.pointerIn, self.pointerAt), v, finger)) return NO;   // (a scroll: where the pointer is)
     DMStripState *st = objc_getAssociatedObject(fg, kStripStateKey);
     self.began = st ? st->first : 0;
     return YES;
@@ -386,7 +403,10 @@ __attribute__((noinline)) static void DMStripAttach(UIView *fg) {
     wheel.allowedTouchTypes = @[];
     wheel.allowedScrollTypesMask = UIScrollTypeMaskDiscrete;
     wheel.delegate = h;
-    [fg addGestureRecognizer:touch]; [fg addGestureRecognizer:swipe]; [fg addGestureRecognizer:wheel];
-    h.touch = touch; h.swipe = swipe; h.wheel = wheel;
+    UIHoverGestureRecognizer *hover = [[UIHoverGestureRecognizer alloc] initWithTarget:h action:@selector(hovered:)];   // (where the pointer is: a scroll's place)
+    hover.cancelsTouchesInView = NO; hover.delaysTouchesBegan = NO; hover.delaysTouchesEnded = NO;   // (it only watches: a click on a title, Go or the clock as before)
+    hover.delegate = h;
+    [fg addGestureRecognizer:touch]; [fg addGestureRecognizer:swipe]; [fg addGestureRecognizer:wheel]; [fg addGestureRecognizer:hover];
+    h.touch = touch; h.swipe = swipe; h.wheel = wheel; h.hover = hover;
     objc_setAssociatedObject(fg, kStripHandlerKey, h, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (the recognizers hold their target weakly)
 }

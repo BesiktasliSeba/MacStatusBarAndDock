@@ -62,6 +62,13 @@ static inline void MSBDInUseBarAction(MSBDInUseState *s, int d, double now) {
     if (!s || !s->known || s->inUse == d) return;
     if (s->holdUntil < now + kMSBDInUseBarHold) s->holdUntil = now + kMSBDInUseBarHold;
 }
+// A transition on display d is about to hand that display's front window the keyboard's keys (SpringBoard's switcher does at a transition's end,
+// statusbar/SMSpotKeyboard.h): they stay where they are while d is not the display in use and that one is held (1.8.8.3: the TV bar's green on
+// iPadOS 18.5 -- the zoom back's transition ended 0.7 s after the click and gave the TV's app the keys, after the ask-back had read them still with
+// the iPad's active app and stopped; or a touch on the other display a moment before such a transition lands).
+static inline int MSBDInUseKeepsKeys(const MSBDInUseState *s, int d, double now) {
+    return s && s->known && d != s->inUse && now < s->holdUntil;
+}
 // An app's icon tapped: the transition it asks is the user's, wherever its window comes -- no hold.
 static inline void MSBDInUseFollow(MSBDInUseState *s) { if (s) s->holdUntil = 0; }
 // The other display went (or another one came): the next reading starts afresh.

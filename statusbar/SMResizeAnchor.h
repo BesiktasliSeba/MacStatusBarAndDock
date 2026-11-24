@@ -255,6 +255,16 @@ static id DMSMRAGesture(id self, SEL _cmd, id event) {   // -[SBItemResizeGestur
         unsigned long long e = 0; CGRect st = CGRectNull;
         if (DMSMRARead(self, gSMRAEdgeIv, &e, sizeof e) && e >= 1 && e <= 8 && DMSMRARead(self, gSMRAStartIv, &st, sizeof st) && DMSMRectSane(st)) DMSMRADropTitleRecord(e, st);
     }
+    // (1.8.8.3: a resize by hand of a window left partly past the screen's edge keeps it where it is, as Aerial's, Zetsu's and MilkyWay4's resizes
+    //  do: its record follows it -- StatusBar.x DMSMPastEdgeResizeBegan; on 16, 17 and 18 alike. The edge and the card as the resize began not
+    //  read: nothing followed, the window at its new size is fitted inside as before)
+    if (read && phase == 1) {
+        unsigned long long e = 0; CGRect st = CGRectNull;
+        if (DMSMRARead(self, gSMRAEdgeIv, &e, sizeof e) && e >= 1 && e <= 8 && DMSMRARead(self, gSMRAStartIv, &st, sizeof st) && DMSMRectSane(st)) {
+            MSBDResizeSides sd = MSBDResizeSidesOf(e);
+            DMSMPastEdgeResizeBegan((sd.left ? kDMSMPastEdgeLeft : 0) | (sd.right ? kDMSMPastEdgeRight : 0) | (sd.top ? kDMSMPastEdgeTop : 0) | (sd.bottom ? kDMSMPastEdgeBottom : 0), st);
+        } else DMSMPastEdgeResizeBegan(0, CGRectNull);
+    }
     // (17.5.1 measures the edge adjustment -- each step's side = the finger plus it -- as the side minus the finger where the gesture BEGAN, once the
     //  pan had gone its start distance: the side then keeps that much more distance from the finger for the whole drag than it had where the finger
     //  touched down (17.5: {17, 21} for a corner grabbed 6 pt in; a late start {60, 83}), behind the finger in the drag's first direction -- in past

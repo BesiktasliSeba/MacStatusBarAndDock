@@ -2,6 +2,23 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.8.3
+
+### New
+- With the Stage Manager engine and Aerial, windows can now be moved partly off the left, right and bottom edges of the screen, as with Zetsu, so you can keep them out of the way. With Stage Manager this works on an external display too (#19).
+
+### Fixes
+- In some games, turning the game's volume down in the menu bar's Audio menu made it much louder and distorted. It now gets quieter as it should (#18).
+- With the Stage Manager engine, a window you drag by its title bar now stays exactly under your finger or pointer, as with Aerial and Zetsu.
+- With the Stage Manager engine, a minimized window now comes back exactly where it was, also one left partly off the screen or behind the Dock.
+- The app's menus that scroll in the menu bar no longer move when you scroll over the Go menu.
+- Opening the App Switcher now closes any open menu, a sticky note's menu too.
+- Opening the App Switcher while typing in a sticky note, its name or a desktop icon's name now finishes the typing, as the Mac Switcher does.
+- The Downloads stack's search now types right away when a Finder window is open.
+- Sticky notes on a Home Screen page full of icons now move to the free space instead of hiding under the icons.
+- On iPadOS 15, the Cut, Copy and Paste menu now comes back over the text you're editing on the desktop after you turn the iPad.
+- With an external display connected, the window buttons in the display's menu bar no longer take the keyboard away from the app you're using on the iPad.
+
 ## 1.8.8.2.1
 
 ### Changes

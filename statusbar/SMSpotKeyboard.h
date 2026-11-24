@@ -21,6 +21,9 @@
 //   result opened), Spotlight's own dismissal (its transition hands the window in front its focus back, so it types again at once), every other
 //   overlay, and another screen's stage (an external display's: the switcher hands its front window the focus there as before, review of 1.7.0).
 //   Debug /tmp/msb-sm-nospotkb: Apple's way.
+//   1.8.8.3: also not while the display in use is the other one and held (StatusBar.x DMBarFrontInUseKeepsKeys, common/DisplayInUse.h): an action
+//   from a display's own bar on its window (the TV bar's green, iPadOS 18.5) asks a transition there whose end handed that window the keys while
+//   the iPad's app stayed the active one; the keys stay with it.
 #pragma once
 
 static unsigned gSMSpotKept;   // (how often Spotlight kept its keyboard over the windows: the diagnostics record)
@@ -54,10 +57,14 @@ static void DMSMSpotFocusNew(id self, SEL _cmd, id from, id to, id windowScene) 
     // (1.8.8.1: the desktop types -- a name, a sticky note, in its own window over the stage -- and the stage stays as it was: the keys stay the
     //  desktop's, on any screen's transition. A long note session meets window opens, closes and resizes; a touch elsewhere ends the typing first.)
     BOOL typing = !keep && DMSMEngine() && DMDesktopTypingNow() && DMSMSameStage(from, to);
+    // (1.8.8.3: a transition on a display that is not the one in use while that one is held -- an action from this display's bar on its window: the
+    //  keys stay with the active window's app, StatusBar.x DMBarFrontInUseKeepsKeys)
+    BOOL held = !keep && !typing && DMSMEngine() && DMBarFrontInUseKeepsKeys(screen);
 #if DEBUG
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smspotkb] the stage's front window to be handed the focus? %@ -> %@ (Spotlight up on this screen %d, on any %d, dismissing %d; %@ screen; the desktop types %d): %@",
         DMSWDescribe(DMCall(from, @"appLayout")), DMSWDescribe(DMCall(to, @"appLayout")), DMSpotlightShownOn(screen), DMSpotlightShown(), DMSMOverlayGoing(),
-        !screen ? @"no" : screen == MSBDMainWindowScene() ? @"the iPad's" : @"another", DMDesktopTypingNow(), keep ? @"no, Spotlight keeps the keyboard" : typing ? @"no, the desktop's typing keeps the keyboard" : @"Apple's way"]);
+        !screen ? @"no" : screen == MSBDMainWindowScene() ? @"the iPad's" : @"another", DMDesktopTypingNow(), keep ? @"no, Spotlight keeps the keyboard" : typing ? @"no, the desktop's typing keeps the keyboard"
+        : held ? @"no, the display in use is held on the other display: the keys stay with its active window" : @"Apple's way"]);
 #endif
     if (keep) {
         DM_FEATURE_MARK("sm-spotlight-keeps-keyboard");
@@ -65,6 +72,7 @@ static void DMSMSpotFocusNew(id self, SEL _cmd, id from, id to, id windowScene) 
         return;
     }
     if (typing) { DM_FEATURE_MARK("sm-desktop-typing-keeps-keyboard"); return; }
+    if (held) { DM_FEATURE_MARK("sm-inuse-keeps-keyboard"); return; }
     o_SMSpotFocusNew(self, _cmd, from, to, windowScene);
 }
 static void DMSMSpotKeyboardInstall(void) {   // (optional: once, from the start-up self-check)

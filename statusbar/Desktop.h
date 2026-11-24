@@ -441,6 +441,12 @@ static BOOL DMDesktopRenameYes(id self, SEL _cmd) { return YES; }   // (it has t
 // its menu with one) is asked to place its menu again, -updateVisibleMenuPositionAnimated:, which asks the text for its selection's place now and
 // does nothing when no menu shows; iPadOS 15: UIMenuController's menu, when it shows, shown again from the selection's place. Looked up by name and
 // shape (no hook, no new private call). Returns how many were asked.
+// iPadOS 15 (1.8.8.3): UIKit hides UIMenuController's menu as the screen turns, before the typing window is told of the turn (15.6.1: never visible
+// by the time it was followed, so it was never shown again and the field turned without it). When the typing window was last told of a turn
+// (DMDesktopRenameTurned), and when that menu last began to hide while the typing window typed (its notification, DMDesktopEditMenuWatch).
+// Once per turn (review 1.8.8.3): the turn the follow has shown the menu for (its told time) -- a close after that is the user's (a tap, a key
+// typed) and is never undone by the follow 0.4 s on.
+static CFTimeInterval gDesktopTurnToldAt = 0, gDesktopEditMenuHidAt = 0, gDesktopEditMenuTurnDone = 0;
 __attribute__((noinline)) static int DMDesktopEditMenuFollow(UIView *typing) {
     if (!typing) return 0;
     Class emi = objc_getClass("UIEditMenuInteraction");
@@ -461,16 +467,33 @@ __attribute__((noinline)) static int DMDesktopEditMenuFollow(UIView *typing) {
         return asked;
     }
     UIMenuController *mc = [UIMenuController sharedMenuController];   // (iPadOS 15)
-    if (!mc.isMenuVisible || ![typing conformsToProtocol:@protocol(UITextInput)]) return 0;
+    // (shown, or hidden by this turn -- from 1 s before the typing window was told of it, within 1.5 s of that --: shown at the selection's place now)
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL thisTurn = gDesktopTurnToldAt > 0 && now - gDesktopTurnToldAt < 1.5;
+    BOOL shown = mc.isMenuVisible, hidByTurn = !shown && thisTurn && gDesktopEditMenuTurnDone != gDesktopTurnToldAt && gDesktopEditMenuHidAt > 0 && gDesktopEditMenuHidAt >= gDesktopTurnToldAt - 1.0;
+    if ((!shown && !hidByTurn) || ![typing conformsToProtocol:@protocol(UITextInput)]) return 0;
     id<UITextInput> text = (id<UITextInput>)typing;
     UITextRange *sel = text.selectedTextRange;
     if (!sel) return 0;
     CGRect r = sel.isEmpty ? [text caretRectForPosition:sel.start] : [text firstRectForRange:sel];
     UIView *from = [text respondsToSelector:@selector(textInputView)] ? text.textInputView : typing;
     if (!from || CGRectIsNull(r) || !isfinite(r.origin.x) || !isfinite(r.origin.y) || !isfinite(r.size.width) || !isfinite(r.size.height)) return 0;
-    [mc hideMenu];
+    if (shown) [mc hideMenu];
+    gDesktopEditMenuHidAt = 0;   // (a hide is undone once: the next turn's hide is its own)
+    if (thisTurn) gDesktopEditMenuTurnDone = gDesktopTurnToldAt;   // (shown for this turn: a close after this is the user's, review 1.8.8.3)
     [mc showMenuFromView:from rect:r];
     return 1;
+}
+// (iPadOS 15, the typing window made: UIMenuController's menu beginning to hide while it types is noted for DMDesktopEditMenuFollow -- once)
+static UIView *DMDesktopRenameTyping(void);
+static void DMDesktopEditMenuWatch(void) {
+    static dispatch_once_t once;
+    if (objc_getClass("UIEditMenuInteraction")) return;   // (16 and later: the edit menu interactions follow, above)
+    dispatch_once(&once, ^{
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIMenuControllerWillHideMenuNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            if (DMDesktopRenameTyping()) gDesktopEditMenuHidAt = CACurrentMediaTime();
+        }];
+    });
 }
 // What is being typed in the typing window (a name's field, a note's text or its name): the first responder in it, or nil.
 static UIView *DMDesktopRenameTyping(void) {
@@ -543,6 +566,7 @@ static void DMDesktopRenameTurned(UIWindow *self, SEL _cmd, long long to, double
     struct objc_super sup = { self, [self superclass] };
     ((void (*)(struct objc_super *, SEL, long long, double, long long))objc_msgSendSuper)(&sup, _cmd, to, duration, from);
     if (self != gDesktopRenameWindow || self.hidden) return;
+    gDesktopTurnToldAt = CACurrentMediaTime();   // (iPadOS 15: UIKit's edit menu, hidden by this turn, is shown again: DMDesktopEditMenuFollow)
     DMLog([NSString stringWithFormat:@"[desktop] the typing window is told of the turn %lld -> %lld (window %@): its container fitted again", from, to, NSStringFromCGSize(self.bounds.size)]);
     DMDesktopRenameFit();
     [self setNeedsLayout];
@@ -607,6 +631,7 @@ static UIView *DMDesktopRenameHost(void) {
             UIView *r = [UIView new]; r.backgroundColor = [UIColor clearColor];
             [w addSubview:r];
             gDesktopRenameRotator = r; gDesktopRenameWindow = w;
+            DMDesktopEditMenuWatch();   // (iPadOS 15: a turn's hide of UIKit's edit menu is undone, 1.8.8.3)
             DMSnapInvalidate();
             DMLog([NSString stringWithFormat:@"[desktop] rename window made: %@ frame %@", NSStringFromClass([w class]), NSStringFromCGRect(w.frame)]);
         } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[desktop] rename window failed: %@", e]); return nil; }
@@ -2582,6 +2607,21 @@ static void DMDesktopKeyboardMoved(void) { [gDesktop dm_fitRenameField]; }
 __attribute__((noinline)) static BOOL DMDesktopTypingNow(void) { return gDesktop && [gDesktop dm_typingNow]; }
 // ... and it ends now: the Mac Switcher opens or switches desktops (its layer is above the typing window: the keyboard would be under it).
 __attribute__((noinline)) static void DMDesktopTypingEnd(NSString *why) { if (gDesktop) [gDesktop dm_typingEnd:why]; }
+// ... and it ends as iPadOS's App Switcher comes (1.8.8.3), as the Mac Switcher's open ends it (MacSwitcher.h DMMSWOpenNow): SpringBoard's switcher
+// transition event to environment mode 2 (StatusBar.x's -setToEnvironmentMode: hook, in every setup, the one that closes our menus for it: a gesture,
+// the Home button's double press, Show App Switcher). The switcher's cards are drawn in its own window, and the typing window, kept just above that
+// window's level (DMDesktopRenameLevel), stayed over the cards with its keyboard until Home (16.7.7: a sticky note's name being typed, Show App
+// Switcher). Not while the Mac Switcher shows (its open ended the typing), nor while it is on and iPadOS's switcher was not asked for from the Apple
+// menu (such an event is the Mac Switcher's gesture then, whose open ends it: DMSwitcherEnvCloseMenus's rule). On the main queue's next turn, never
+// inside SpringBoard's transition. The note tick ends it too while the App Switcher shows, whichever way it came (-dm_noteTick).
+__attribute__((noinline)) static void DMDesktopTypingSwitcherEvent(long long mode) {
+    if (mode != 2) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!DMDesktopTypingNow() || DMMSWIsOpen() || (gMSWOn && !DMMSWStockOnce())) return;
+        DM_FEATURE_MARK("desktop-typing-ends-app-switcher");
+        DMDesktopTypingEnd(@"the App Switcher opens");
+    });
+}
 // ... and it ends at a layout transition SpringBoard begins (1.8.8.2, B74): Spotlight being presented, or the iPad's own display going to a
 // full-screen window or app (common/StickyNotes.h MSBDStickyTypingAt has the rule and why). Neither has a touch of its own when it comes from the
 // keyboard (Cmd-Space, Globe-F, a shortcut) or from a request, and neither changes the app in front, so the tick never saw them: the editor and

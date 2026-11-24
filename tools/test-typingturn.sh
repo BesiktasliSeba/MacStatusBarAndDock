@@ -45,7 +45,7 @@ harness() {   # $1 Desktop.h, $2 dir, $3 quiet: rc
   for fl in 0-0 0-1 1-0 2-0; do
     local shape=${fl%-*} dbg=${fl#*-}
     clang -target "$(uname -m)-apple-ios14.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" \
-          -fobjc-arc -Wall -Wno-unused-function -Werror=implicit-function-declaration -I"$d" -DT_SHAPE=$shape -DDEBUG=$dbg -framework UIKit -o "$d/t$fl" test-typingturn.m 2> "$d/cc-$fl.txt" \
+          -fobjc-arc -Wall -Wno-unused-function -Werror=implicit-function-declaration -I"$d" -DT_SHAPE=$shape -DDEBUG=$dbg -framework UIKit -framework QuartzCore -o "$d/t$fl" test-typingturn.m 2> "$d/cc-$fl.txt" \
       || { [ -n "$q" ] || { head -30 "$d/cc-$fl.txt"; echo "FAIL  the real code did not build ($fl)"; }; return 99; }
     [ -s "$d/cc-$fl.txt" ] && [ -z "$q" ] && { echo "FAIL  warnings ($fl):"; cat "$d/cc-$fl.txt"; r=1; }
     if [ -n "$q" ]; then "$d/t$fl" > /dev/null 2>&1 || r=1; else echo "-- shape $shape, DEBUG $dbg"; "$d/t$fl" || r=1; fi

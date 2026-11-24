@@ -194,6 +194,13 @@ static MSBDStripIn gStripRefusedIn;
 - (CGPoint)translationInView:(UIView *)v { (void)v; return self.tMove; }
 - (UIGestureRecognizerState)state { return UIGestureRecognizerStateChanged; }
 @end
+// A touch where the test puts it (S11c: what the strip's handler lets its recognizers receive), in the copy's own coordinates.
+@interface TTouchAt : UITouch
+@property (nonatomic) CGPoint tAt;
+@end
+@implementation TTouchAt
+- (CGPoint)locationInView:(UIView *)v { (void)v; return self.tAt; }
+@end
 
 // (the copy as a view whose layout pass is ours, for the strip's own moves -- DMStripGo lays the copy out again by -layoutIfNeeded; only then)
 static BOOL gTFGLayout = NO;
@@ -683,9 +690,30 @@ static void TStripChecks(TScene s, NSString *tag, NSString *framesOff, TResult r
         wpan.tMove = CGPointMake(0, 30.0); wpan.tLoc = mid; wbegins[1] = [h gestureRecognizerShouldBegin:wpan];
         CGPoint goMid = TAtLead(fg, leads[0]);
         wpan.tMove = CGPointMake(0, -30.0); wpan.tLoc = goMid; wbegins[2] = [h gestureRecognizerShouldBegin:wpan];
+        // S11b (1.8.8.3, seen on iPadOS 17.5.1): the pan's translation leaves out its first ~10 pt, so a sideways scroll beginning 7 pt past the
+        //  room (at Go's button), read as its location less its translation, came out 3 pt inside the room and moved the strip. With the pointer
+        //  over the copy (its hover), a scroll begins where the pointer is: never past the room; over the strip as before, the wheel too.
+        BOOL hb[3];
+        CGPoint past = TAtLead(fg, in.end + 7.0);
+        pan.tMove = CGPointMake(-30.0 * dir, 0); pan.tLoc = CGPointMake(past.x - 40.0 * dir, past.y);
+        h.pointerIn = YES; h.pointerAt = past; hb[0] = [h gestureRecognizerShouldBegin:pan];
+        pan.tLoc = CGPointMake(mid.x - 40.0 * dir, mid.y); h.pointerAt = mid; hb[1] = [h gestureRecognizerShouldBegin:pan];
+        wpan.tMove = CGPointMake(0, -30.0); wpan.tLoc = CGPointMake(mid.x, mid.y + 30.0); hb[2] = [h gestureRecognizerShouldBegin:wpan];
+        h.pointerIn = NO; h.pointerAt = CGPointZero;
+        // S11c (review 1.8.8.3): the copy's hover follows the pointer wherever it comes onto the copy -- a pointer that came on past the room's touch
+        //  area (over Go, the clock) and stays there is where a scroll must be judged; the pans still take touches in the room only
+        TTouchAt *tt = [TTouchAt new];
+        CGPoint far = TAtLead(fg, in.end + 8.0 * MAX(1.0, ((DMStripState *)objc_getAssociatedObject(fg, kStripStateKey))->k) + 12.0);
+        tt.tAt = far;
+        BOOL farOut = !DMStripInRoom(fg, far), hoverFar = [h gestureRecognizer:h.hover shouldReceiveTouch:tt], touchFar = [h gestureRecognizer:h.touch shouldReceiveTouch:tt];
+        tt.tAt = mid;
+        BOOL hoverMid = [h gestureRecognizer:h.hover shouldReceiveTouch:tt], touchMid = [h gestureRecognizer:h.touch shouldReceiveTouch:tt];
         h.swipe = realSwipe; h.wheel = realWheel;
         [gBar removeFromSuperview];
         gTFGLayout = NO;
+        TCheck(h.hover && farOut && hoverFar && !touchFar && hoverMid && touchMid, [NSString stringWithFormat:@"S11c the copy's hover refused where the pointer comes onto the copy past the room (past its touch area %d: hover %d, the finger's pan %d; in the room: hover %d, pan %d): %@", farOut, hoverFar, touchFar, hoverMid, touchMid, tag]);
+        TCheck(h.hover && !h.hover.cancelsTouchesInView && !h.hover.delaysTouchesBegan && !h.hover.delaysTouchesEnded, [NSString stringWithFormat:@"S11c the copy's hover holds back or cancels touches (cancels %d, delays began %d, ended %d): %@", h.hover.cancelsTouchesInView, h.hover.delaysTouchesBegan, h.hover.delaysTouchesEnded, tag]);
+        TCheck(!hb[0] && hb[1] && hb[2], [NSString stringWithFormat:@"S11b with the pointer over the copy, a scroll is not judged where the pointer is (7 pt past the room, the pan's first 10 pt left out: began %d; over the strip %d; a wheel's notch there %d): %@", hb[0], hb[1], hb[2], tag]);
         TCheck(!begins[0] && !begins[1], [NSString stringWithFormat:@"S11 a scroll sideways over Go began the strip's scroll (Go's middle %d, 7 pt past the room %d): %@", begins[0], begins[1], tag]);
         TCheck(begins[2] && (vertMoved || last == 0), [NSString stringWithFormat:@"S11 a scroll up or down over the strip did not move it (began %d, moved %d): %@", begins[2], vertMoved, tag]);
         TCheck(begins[3], [NSString stringWithFormat:@"S11 a scroll sideways over the strip did not begin: %@", tag]);

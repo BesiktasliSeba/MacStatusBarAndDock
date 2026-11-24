@@ -20,7 +20,7 @@ run() {   # $1 Desktop.h, $2 dir, $3 quiet: the function cut out and the harness
   fn "$1" '__attribute__((noinline)) static int DMDesktopEditMenuFollow(UIView *typing) {' > "$d/cut.h"
   [ -s "$d/cut.h" ] || { [ -n "$3" ] || echo "FAIL  DMDesktopEditMenuFollow not found in $1 (the edit menu is never told of a turn)"; return 1; }
   clang -target "$(uname -m)-apple-ios16.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" -fobjc-arc -Wall -Wno-unused-function -Wno-deprecated-declarations \
-        -Werror=implicit-function-declaration -framework UIKit -framework CoreGraphics -DCUT_H="\"$d/cut.h\"" -o "$d/t" test-editmenufollow.m 2> "$d/cc.txt" || { [ -n "$3" ] || { head -5 "$d/cc.txt"; echo "FAIL  the harness did not build"; }; return 1; }
+        -Werror=implicit-function-declaration -framework UIKit -framework CoreGraphics -framework QuartzCore -DCUT_H="\"$d/cut.h\"" -o "$d/t" test-editmenufollow.m 2> "$d/cc.txt" || { [ -n "$3" ] || { head -5 "$d/cc.txt"; echo "FAIL  the harness did not build"; }; return 1; }
   [ -s "$d/cc.txt" ] && { [ -n "$3" ] || { echo "FAIL  warnings:"; cat "$d/cc.txt"; }; return 1; }
   if [ -n "$3" ]; then "$d/t" > /dev/null 2>&1; else "$d/t"; fi
 }
@@ -39,7 +39,11 @@ sites() {   # $1 Desktop.h: the number of failed checks (quiet with $2)
       && fn '$D' 'static void DMDesktopRenameMenuFollow(void) {' | grep -qF 'int asked = DMDesktopEditMenuFollow(DMDesktopRenameTyping());'"
   sc "  ... UIKit's call by name and shape only (\"v@:B\", a BOOL; \"v@:c\" on an Intel Mac), no hook; iPadOS 15's UIMenuController only where there is no edit menu interaction class" \
      "fn '$D' '__attribute__((noinline)) static int DMDesktopEditMenuFollow(UIView *typing) {' > '$W/f.txt' && grep -qF 'if (![shape isEqualToString:@\"v@:B\"] && ![shape isEqualToString:@\"v@:c\"]) return 0;' '$W/f.txt' && grep -qF 'Class emi = objc_getClass(\"UIEditMenuInteraction\");' '$W/f.txt' \
-      && awk '/return asked;/{a=NR} /UIMenuController \\*mc = \\[UIMenuController sharedMenuController\\];/{b=NR} END{exit !(a && b > a)}' '$W/f.txt' && grep -qF 'if (!mc.isMenuVisible || ![typing conformsToProtocol:@protocol(UITextInput)]) return 0;' '$W/f.txt' && ! grep -q 'MSHook\\|%hook' '$W/f.txt'"
+      && awk '/return asked;/{a=NR} /UIMenuController \\*mc = \\[UIMenuController sharedMenuController\\];/{b=NR} END{exit !(a && b > a)}' '$W/f.txt' && grep -qF 'if ((!shown && !hidByTurn) || ![typing conformsToProtocol:@protocol(UITextInput)]) return 0;' '$W/f.txt' && ! grep -q 'MSHook\\|%hook' '$W/f.txt'"
+  sc "iPadOS 15 (1.8.8.3): the typing window told of a turn notes when; UIMenuController's menu beginning to hide while it types is noted (the window made, 15 only, once)" \
+     "fn '$D' 'static void DMDesktopRenameTurned(UIWindow *self, SEL _cmd, long long to, double duration, long long from) {' | grep -qF 'gDesktopTurnToldAt = CACurrentMediaTime();' \
+      && fn '$D' 'static void DMDesktopEditMenuWatch(void) {' | grep -qF 'addObserverForName:UIMenuControllerWillHideMenuNotification' && fn '$D' 'static void DMDesktopEditMenuWatch(void) {' | grep -qF 'if (DMDesktopRenameTyping()) gDesktopEditMenuHidAt = CACurrentMediaTime();' \
+      && fn '$D' 'static void DMDesktopEditMenuWatch(void) {' | grep -qF 'if (objc_getClass(\"UIEditMenuInteraction\")) return;' && grep -qF '            DMDesktopEditMenuWatch();   // (iPadOS 15' '$D'"
   return $bad
 }
 sites "$D0" || fails=1
@@ -55,4 +59,8 @@ mtf "only the field's own interaction (not UIKit's views inside it)" 's/        
 mtf "the menu moved with an animation" 's/\(\(void \(\*\)\(id, SEL, BOOL\)\)objc_msgSend\)\(i, up, NO\)/((void (*)(id, SEL, BOOL))objc_msgSend)(i, up, YES)/'
 mtf "every view's interactions asked, also another field's" 's/            if \(v == typing \|\| \[v isDescendantOfView:typing\]\) \[views addObjectsFromArray:v.subviews\];/            [views addObjectsFromArray:v.subviews];/'
 mtf "not bounded" 's/k < views\.count && k < 96; k\+\+/k < views.count; k++/'
+mtf "iPadOS 15: a menu UIKit hid as the screen turned never shown again (1.8.8.3)" 's/BOOL shown = mc\.isMenuVisible, hidByTurn = [^;]*;/BOOL shown = mc.isMenuVisible, hidByTurn = NO;/'
+mtf "iPadOS 15: any menu that hid shown again, not only one the turn hid" 's/ && gDesktopEditMenuHidAt >= gDesktopTurnToldAt - 1\.0;/;/'
+mtf "iPadOS 15: a turn's hide undone more than once" 's/    gDesktopEditMenuHidAt = 0;   \/\/ \(a hide is undone once[^\n]*\n//'
+mtf "iPadOS 15: a menu the user closed after the turn's follow showed it shown again 0.4 s on (once per turn, review 1.8.8.3)" 's/    if \(thisTurn\) gDesktopEditMenuTurnDone = gDesktopTurnToldAt;[^\n]*\n//'
 [ $fails = 0 ] && echo "test-editmenufollow: all pass" || { echo "test-editmenufollow: FAILED"; exit 1; }

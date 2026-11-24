@@ -16,6 +16,7 @@
 #include <CoreGraphics/CoreGraphics.h>
 #include <errno.h>
 #include <math.h>
+#include <stdlib.h>
 
 #define MSBD_NOTES_MAX 30             // (notes shown; New Sticky Note is greyed at this many)
 #define MSBD_NOTE_TEXT_MAX 10000      // (characters a note keeps: a paste is cut to fit)
@@ -28,8 +29,7 @@
 #define MSBD_NOTE_BAR 22.0            // (the top bar, in the colour's darker shade: the note's move handle; 1.8.8.2 B78, the 6 pt band before)
 #define MSBD_NOTE_HOLD_TO_MOVE 0.2    // (a finger held this long, still, on a note's paper before a move drags it: 1.8.8.2 B78; its bar drags at once)
 #define MSBD_NOTE_LIFT_GAP 8.0        // (a note lifted over the keyboard ends this far above it)
-#define MSBD_NOTE_CLEAR_STEP 8.0      // (MSBDStickyPlaceClear's rings)
-#define MSBD_NOTE_CLEAR_TESTS 60000L  // (... and its cap of rect tests a note)
+#define MSBD_NOTE_CLEAR_TESTS 1000000L   // (MSBDStickyPlaceClear's cap of rect tests a note: never reached on a Home Screen page, see there)
 #define MSBD_NOTES_VERSION 1
 #define MSBD_NOTE_PAGE_MAX 200        // (a page key's length at most: "home:<iPadOS's page id>", 1.8.8.2 F36)
 #define MSBD_NOTE_NAME_MAX 100        // (a note's own name, characters at most, 1.8.8.2 F37)
@@ -77,28 +77,63 @@ static inline CGRect MSBDStickyFrameAt(CGRect area, CGPoint c, CGSize size) {
     CGFloat cx = isfinite(c.x) ? c.x : CGRectGetMidX(area), cy = isfinite(c.y) ? c.y : CGRectGetMidY(area);
     return MSBDStickyClampInside(CGRectMake(cx - w / 2.0, cy - h / 2.0, w, h), area);
 }
-// The nearest frame of the same size, inside the area, over none of the rects (app icons, widgets, page dots): moved in 8 pt steps on growing
-// square rings around it, nearest first. At most maxTests rect tests (a page full of app icons gives up early): then the nearest clear one found,
-// else the frame kept inside the area. *tests: how many were made (the Mac test).
+// The nearest frame of the same size, inside the area, over none of the rects (app icons, widgets, page dots), found directly (1.8.8.3). A frame
+// clear of a rect lies wholly to one side of it, so the nearest clear place has each of its two coordinates where the frame was, against a rect's
+// side or against the area's edge: every such place is a candidate, tried nearest first (an equal distance: the higher, then the further left),
+// and the first clear one is the nearest there is, however far. Before, 8 pt rings around the frame with a cap of 60,000 rect tests: on a page full
+// of app icons it gave up long before a clear band 460 pt away, and the note stayed under the icons (or, the Dock at a side, shown at its size over
+// one). None clear: the frame kept inside the area. maxTests caps the rect tests (K x K places for K <= 2n + 3 coordinates a side, n rects at most
+// each: a Home Screen page's few dozen rects stay far under MSBD_NOTE_CLEAR_TESTS). *tests: how many were made (the Mac test).
+typedef struct { CGFloat d, x, y; } MSBDStickyPlaceTry;
+static inline int MSBDStickyPlaceTryOrder(const void *a, const void *b) {
+    const MSBDStickyPlaceTry *p = (const MSBDStickyPlaceTry *)a, *q = (const MSBDStickyPlaceTry *)b;
+    if (p->d != q->d) return p->d < q->d ? -1 : 1;
+    if (p->y != q->y) return p->y < q->y ? -1 : 1;
+    return p->x < q->x ? -1 : (p->x > q->x ? 1 : 0);
+}
+static inline int MSBDStickyCoordOrder(const void *a, const void *b) { CGFloat p = *(const CGFloat *)a, q = *(const CGFloat *)b; return p < q ? -1 : (p > q ? 1 : 0); }
+// The coordinates inside lo..hi (a frame there stays inside the area), sorted, each once. Their number.
+static inline int MSBDStickyCoords(CGFloat *v, int k, CGFloat lo, CGFloat hi) {
+    int m = 0;
+    for (int i = 0; i < k; i++) if (v[i] >= lo - 1e-9 && v[i] <= hi + 1e-9) v[m++] = MIN(MAX(v[i], lo), hi);   // (NaN: never kept)
+    qsort(v, (size_t)m, sizeof(CGFloat), MSBDStickyCoordOrder);
+    int u = 0;
+    for (int i = 0; i < m; i++) if (!u || v[i] != v[u - 1]) v[u++] = v[i];
+    return u;
+}
 static inline CGRect MSBDStickyPlaceClear(CGRect frame, CGRect area, const CGRect *rects, int n, long maxTests, long *tests) {
     long done = 0;
     CGRect f0 = MSBDStickyClampInside(frame, area), best = CGRectNull;
-    CGFloat bestD = CGFLOAT_MAX, step = MSBD_NOTE_CLEAR_STEP;
-    int maxRing = (int)ceil(MAX(area.size.width, area.size.height) / step) + 1;
-    for (int ring = 0; ring <= maxRing && done <= maxTests; ring++) {
-        if (!CGRectIsNull(best) && (ring - 1) * step > bestD) break;   // (every point farther out is farther than the one found)
-        for (int dy = -ring; dy <= ring && done <= maxTests; dy++) {
-            BOOL edge = dy == -ring || dy == ring;
-            for (int dx = -ring; dx <= ring && done <= maxTests; dx += (edge || ring == 0) ? 1 : 2 * ring) {
-                CGRect c = MSBDStickyClampInside(CGRectOffset(f0, dx * step, dy * step), area);
-                CGFloat d = hypot(c.origin.x - f0.origin.x, c.origin.y - f0.origin.y);
-                if (d >= bestD) continue;
-                BOOL clear = YES;
-                for (int k = 0; k < n && clear; k++) { done++; if (MSBDStickyRectsOverlap(c, rects[k])) clear = NO; }
-                if (clear) { best = c; bestD = d; }
+    BOOL clear = YES;
+    for (int k = 0; k < n && clear; k++) { done++; if (MSBDStickyRectsOverlap(f0, rects[k])) clear = NO; }
+    if (clear) { if (tests) *tests = done; return f0; }
+    CGFloat w = f0.size.width, h = f0.size.height;
+    CGFloat x0 = CGRectGetMinX(area), x1 = MAX(x0, CGRectGetMaxX(area) - w), y0 = CGRectGetMinY(area), y1 = MAX(y0, CGRectGetMaxY(area) - h);
+    CGFloat *xs = malloc(sizeof(CGFloat) * (size_t)(2 * n + 3)), *ys = malloc(sizeof(CGFloat) * (size_t)(2 * n + 3));
+    MSBDStickyPlaceTry *c = NULL;
+    if (xs && ys) {
+        int kx = 0, ky = 0;
+        xs[kx++] = f0.origin.x; xs[kx++] = x0; xs[kx++] = x1;
+        ys[ky++] = f0.origin.y; ys[ky++] = y0; ys[ky++] = y1;
+        for (int k = 0; k < n; k++) {   // (against each rect's sides: left of it, right of it, above it, under it)
+            xs[kx++] = CGRectGetMinX(rects[k]) - w; xs[kx++] = CGRectGetMaxX(rects[k]);
+            ys[ky++] = CGRectGetMinY(rects[k]) - h; ys[ky++] = CGRectGetMaxY(rects[k]);
+        }
+        kx = MSBDStickyCoords(xs, kx, x0, x1); ky = MSBDStickyCoords(ys, ky, y0, y1);
+        c = kx && ky ? malloc(sizeof(MSBDStickyPlaceTry) * (size_t)kx * (size_t)ky) : NULL;
+        if (c) {
+            size_t m = 0;
+            for (int i = 0; i < kx; i++) for (int j = 0; j < ky; j++) c[m++] = (MSBDStickyPlaceTry){ hypot(xs[i] - f0.origin.x, ys[j] - f0.origin.y), xs[i], ys[j] };
+            qsort(c, m, sizeof(MSBDStickyPlaceTry), MSBDStickyPlaceTryOrder);
+            for (size_t i = 0; i < m && done <= maxTests && CGRectIsNull(best); i++) {
+                CGRect t = CGRectMake(c[i].x, c[i].y, w, h);
+                BOOL ok = YES;
+                for (int k = 0; k < n && ok; k++) { done++; if (MSBDStickyRectsOverlap(t, rects[k])) ok = NO; }
+                if (ok) best = t;
             }
         }
     }
+    free(c); free(xs); free(ys);
     if (tests) *tests = done;
     return CGRectIsNull(best) ? f0 : best;
 }

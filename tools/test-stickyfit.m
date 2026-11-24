@@ -76,6 +76,33 @@ int main(void) { @autoreleasepool {
         CHECK(CGRectIsNull(MSBDStickyTrimClear(CGRectMake(100, 100, 200, 100), (CGRect[]){ CGRectMake(150, 90, 100, 120) }, 1, kMin)), "trimming that would leave less than 120 x 80: none (CGRectNull)");
         CHECK(same(MSBDStickyTrimClear(CGRectMake(100, 100, 200, 100), NULL, 0, kMin), CGRectMake(100, 100, 200, 100)), "trimming a frame that meets nothing: itself");
     }
+    // ---- a full page with its clear room far away (1.8.8.3): found directly, however far ----
+    // (iPadOS 15.6.1, landscape: Home Screen page 2 a full 6 x 4 grid of app icons -- 60 x 77 pt, columns 167 pt apart, rows 121.5 pt apart, y 62.5
+    //  to 504 --, clear only in the band under them, down to the free area's bottom at 730. A note moved there by Move to Page or let go near the icons
+    //  at {400, 51.5} stayed under two icons: the 8 pt rings gave up at their cap of rect tests long before the band, 456 pt down, and no 120 x 80
+    //  gap lies between the icons)
+    {
+        CGRect area = CGRectMake(6, 28, 1182, 702), g[24]; int n = 0;
+        for (int row = 0; row < 4; row++) for (int col = 0; col < 6; col++) g[n++] = CGRectInset(CGRectMake(139.5 + 167 * col, 62.5 + 121.5 * row, 60, 77), -4, -4);
+        CGRect f = CGRectMake(400, 51.5, 220, 180), a, now = Fit(f, area, g, n, &a);
+        long tests = 0; CGRect near = MSBDStickyPlaceClear(f, area, g, n, MSBD_NOTE_CLEAR_TESTS, &tests);
+        CHECK(!MSBDStickyOverAny(now, g, n) && same(now, CGRectMake(400, 508, 220, 180)) && same(a, now) && same(near, now),
+              "a note let go over a full page of icons, the clear band 456 pt under it: moved there at its size, straight down (the nearest clear frame) %s", R(now).UTF8String);
+        CHECK(tests < 200000, "  ... found in %ld rect tests", tests);
+        CGRect again = Fit(MSBDStickyFrameAt(area, CGPointMake(CGRectGetMidX(a), CGRectGetMidY(a)), f.size), area, g, n, NULL);
+        CHECK(same(again, now), "  ... laid out again from the centre it stores: the same frame");
+        CGRect top = Fit(CGRectMake(1000, 30, 220, 180), area, g, n, NULL);
+        CHECK(!MSBDStickyOverAny(top, g, n) && top.size.width == 220 && top.size.height == 180 && inside(top, area), "  ... from the page's top right corner too: clear at its size %s", R(top).UTF8String);
+    }
+    // (iPadOS 18.5, landscape, the Dock at the right: Home Screen page 2's icons in the room beside the Dock, a note stored at its size next to an icon
+    //  of the right column; its own place under an icon, no smaller frame fits between them -- shown at its FULL size over the icon, no line saying so)
+    {
+        CGRect area = CGRectMake(6, 41, 1268, 977), g[30]; int n = 0;
+        for (int row = 0; row < 5; row++) for (int col = 0; col < 6; col++) g[n++] = CGRectInset(CGRectMake(60 + 203 * col, 80 + 128 * row, 83, 96), -4, -4);
+        CGRect f = CGRectMake(980, 230, 220, 180), a, now = Fit(f, area, g, n, &a);
+        CHECK(MSBDStickyOverAny(f, g, n) && !MSBDStickyOverAny(now, g, n) && now.size.width == 220 && now.size.height == 180 && inside(now, area) && same(a, now),
+              "the Dock at a side, a note over an icon, the page's clear room 450 pt away: moved there at its size, never left at its size over the icon %s", R(now).UTF8String);
+    }
     // ---- every page, note and place: never a regression, never under an icon when any room exists, stable ----
     {
         long cases = 0, differ = 0, over = 0, out = 0, unstable = 0, fitted = 0; char first[4][300] = {{0}};

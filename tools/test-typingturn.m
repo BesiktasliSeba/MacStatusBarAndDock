@@ -23,6 +23,10 @@ static int gFits = 0;
 static void DMDesktopRenameFit(void);   // (counted below, as the real one only for the shown window)
 static CGFloat DMDesktopRenameLevel(void) { return 26.0; }
 static BOOL DMDesktopTypingWindowCan(void) { return objc_getClass("SBMainScreenActiveInterfaceOrientationWindow") != nil; }
+// (1.8.8.3: the turn's time and iPadOS 15's edit menu watch, Desktop.h DMDesktopEditMenuFollow's; stand-ins here)
+static CFTimeInterval gDesktopTurnToldAt __attribute__((unused)) = 0, gDesktopEditMenuHidAt __attribute__((unused)) = 0;
+static int gEditMenuWatches __attribute__((unused)) = 0;
+static void DMDesktopEditMenuWatch(void) { gEditMenuWatches++; }
 
 static int gBaseCalls __attribute__((unused)) = 0, gFitsAtBase __attribute__((unused)) = -1;   // (what SpringBoard's stand-in was called with; T_SHAPE 2 has none)
 static long long gBaseTo __attribute__((unused)) = 0, gBaseFrom __attribute__((unused)) = 0; static double gBaseDuration __attribute__((unused)) = 0;

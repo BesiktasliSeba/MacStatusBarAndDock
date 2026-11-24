@@ -259,6 +259,7 @@ These have no switch:
 - Windows have a smallest size with every window engine, as with Stage Manager: the app at least 320 x 300 points, as far as the screen allows.
 - New windows open at the same place and size with every window engine, and a new window that would cover another steps aside from it.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation, with every window engine.
+- Windows can be moved partly off the left, right and bottom edges of the screen to keep them out of the way, with every window engine and on an external display with Stage Manager.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, with a picture of the window. A tap on the card brings the window forward.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - In portrait, a Home Screen page whose icon layout only fits landscape (for example one tuned with Atria, which keeps one layout for both orientations) keeps its landscape positions, so no icon ends up off the screen. Pages that fit in portrait are left as they are, and so is editing the Home Screen.

@@ -2209,6 +2209,7 @@ static DMEngine DMActiveEngine(void) {
 #include "SMFitPlan.h"     // (Fit to Window on a Stage Manager desktop of more than four windows: four tiles keep their places, sm-nolimit)
 #include "SMEngineAPI.h"   // (the Stage Manager engine's private API: checked wrappers + the start-up self-check, 2026-09-29)
 #include "SMFit.h"         // (where a Stage Manager window may go: sizes in points of their own reference, fitted into the desktop, 3 Oct; Mac test tools/test-smfit.sh)
+#include "SMPastEdge.h"    // (a window let go partly past the screen's edges keeps that place, 1.8.8.3: the rule, plain C; Mac test tools/test-smpastedge.sh)
 #include "SMHomeRule.h"    // (the Home rule and the desktop choice, plain Foundation: sm-free 4 Oct, 1.3.8 logic test fixes; Mac test tools/test-smhomerule.sh)
 #include "SMSwitchOn.h"    // (when and how the engine switches Stage Manager on: unlocked only, Apple's first-time path only if no key says it was on; Mac test tools/test-smswitchon.sh)
 #include "SMFrontRule.h"   // (which window a finger's resize corner and a launch are for: covered spots, in front = newest alone; plain C, Mac test tools/test-smfront.sh)
@@ -2893,7 +2894,10 @@ static void DMPerfReport(void) {
 static CFTimeInterval gIdleQuietUntil;
 #endif
 static BOOL gDMWatcherStarted = NO;   // (the 0.2 s watcher has run once: the desktop's start-up look hands over to it, Desktop.h)
+static void DMInitSwitcherLog(void);   // (below: SpringBoard's switcher transition events)
 static void DMSyncWindowsForLibrary(void) {
+    if (!gDMWatcherStarted) DMInitSwitcherLog();   // (1.8.8.3: with every engine and none -- iPadOS's App Switcher on its way closes our menus at once,
+                                                  //  DMSwitcherEnvCloseMenus; before, only the window engines and the windows' cards installed it)
     gDMWatcherStarted = YES;
 #if DEBUG
     if (CACurrentMediaTime() < gIdleQuietUntil) return;
@@ -9192,7 +9196,8 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
         NSValue *down = objc_getAssociatedObject(bar, &kMWDownKey);
         CGPoint now = [g locationInView:win.superview];
         CGPoint d = down ? CGPointMake(now.x - down.CGPointValue.x, now.y - down.CGPointValue.y) : CGPointZero;
-        objc_setAssociatedObject(g, &kMWOffsetKey, (hypot(d.x, d.y) >= 0.5 && hypot(d.x, d.y) <= 40) ? [NSValue valueWithCGPoint:d] : [NSValue valueWithCGPoint:CGPointZero], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // (up to 60 pt, every engine's limit -- 1.8.8.3 review: 40, while UIKit begins a pan up to 52 pt after the touch-down for a quick finger)
+        objc_setAssociatedObject(g, &kMWOffsetKey, (hypot(d.x, d.y) >= 0.5 && hypot(d.x, d.y) < 60.0) ? [NSValue valueWithCGPoint:d] : [NSValue valueWithCGPoint:CGPointZero], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     NSValue *dv = objc_getAssociatedObject(g, &kMWOffsetKey);
     if (DMTestFlag("/tmp/msb-a5-dragtrace")) DMLog([NSString stringWithFormat:@"[mwdrag] state %ld location %@ window %@ catch-up %@", (long)g.state, NSStringFromCGPoint([g locationInView:win.superview]), NSStringFromCGRect(win.frame), dv ? NSStringFromCGPoint(dv.CGPointValue) : @"-"]);
@@ -13760,6 +13765,8 @@ static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizer *g, BOOL was
         if (wasPan) DMSaveWindowState();
     }
 }
+// (1.8.8.3, GitHub #19: a title-bar drag goes past the screen's edges as on every engine; with DMA5DragFollow, defined with Aerial 5's drag)
+static void DMAerialPanFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL after);
 %group AerialStyleNamed
 %hook AerialStage
 // Every minimize (Aerial's own menu included) works the MilkyWay way instead of making the round chip.
@@ -13789,7 +13796,9 @@ static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizer *g, BOOL was
 }
 - (void)handlePan:(id)gesture {
     if (!DMAerialPanBefore((UIView *)self, gesture)) return;
+    DMAerialPanFollow((UIView *)self, gesture, NO);   // (1.8.8.3: where its drag began, before Aerial's step)
     %orig;
+    DMAerialPanFollow((UIView *)self, gesture, YES);   // (... and the window where the finger has it, past the screen's edges too, after it)
     DMAerialGestureAfter((UIView *)self, gesture, YES);
 }
 - (void)handleResizeBR:(id)gesture {
@@ -13838,7 +13847,9 @@ static void h5_flex(id self, SEL _cmd, CGRect bounds) {
 }
 static void h5_pan(id self, SEL _cmd, id gesture) {
     if (!DMAerialPanBefore((UIView *)self, gesture)) return;
+    DMAerialPanFollow((UIView *)self, gesture, NO);
     if (o5_pan) o5_pan(self, _cmd, gesture);
+    DMAerialPanFollow((UIView *)self, gesture, YES);
     DMAerialGestureAfter((UIView *)self, gesture, YES);
 }
 static void h5_resizeBR(id self, SEL _cmd, id gesture) {
@@ -14183,11 +14194,15 @@ static void DMSMBarsSettleSoon(NSString *why);         // (below, with DMSMRefre
 static void DMInitSwitcherLog(void);
 static void DMWinCardsSwitcherComing(long long mode);   // (WindowCards.h: the windows' cards get fresh pictures as iPadOS's App Switcher comes)
 static void DMSMCardsSwitcherEnv(long long mode);       // (SMCards.h: a new App Switcher scrolls to its newest card once)
+static void DMSwitcherEnvCloseMenus(long long mode);    // (below, with the switchers' close: iPadOS's App Switcher on its way closes our menus, 1.8.8.3)
+static void DMDesktopTypingSwitcherEvent(long long mode);   // (Desktop.h: ... and ends the desktop's typing, as the Mac Switcher's open does, 1.8.8.3)
 %group SwitcherLog
 %hook SBTransitionSwitcherModifierEvent
 - (void)setToEnvironmentMode:(long long)mode {
     if (gEnvMode == 2 && mode != 2) gEnvLeftSwitcherAt = CACurrentMediaTime();
     gEnvMode = mode;
+    DMSwitcherEnvCloseMenus(mode);
+    DMDesktopTypingSwitcherEvent(mode);
     DMWinCardsSwitcherComing(mode);
     DMSMCardsSwitcherEnv(mode);
     gSwitcherEventAt = CACurrentMediaTime();
@@ -14214,7 +14229,8 @@ static void DMSMCardsSwitcherEnv(long long mode);       // (SMCards.h: a new App
 %end
 %end
 // (the switcher's environment, gEnvMode, for every engine that needs it: Aerial since 1.1, the Stage Manager engine since 1.5.0, every engine
-//  with the windows' App Switcher cards since 1.7.0 (WindowCards.h) -- installed once)
+//  with the windows' App Switcher cards since 1.7.0 (WindowCards.h), every setup since 1.8.8.3 (iPadOS's App Switcher on its way closes our menus,
+//  DMSwitcherEnvCloseMenus: from the 0.2 s watcher's first run) -- installed once; each of its parts asks for its own engine)
 static void DMInitSwitcherLog(void) {
     static BOOL done = NO;
     if (done || !objc_getClass("SBTransitionSwitcherModifierEvent")) return;
@@ -16869,6 +16885,21 @@ __attribute__((noinline)) static BOOL DMMenusOfOursShown(void) {
     static BOOL (*shown)(void) = NULL;
     if (!shown) shown = (BOOL (*)(void))dlsym(RTLD_DEFAULT, "MSBDDownloadsPanelShown");   // (the Dock part may load later, or not at all)
     return shown && shown();
+}
+// iPadOS's App Switcher on its way -- a switcher transition to it, environment mode 2 (SpringBoard's transition event, the hook above: a gesture, the
+// Home button's double press, Show App Switcher, any display's): every menu of ours closes now, before it shows, with the switchers' one close
+// (1.8.8.3). The tick's close sees the App Switcher only while it is up at a tick: one iPadOS dismissed 0.2 s after it came (a sticky note's menu
+// open, Show App Switcher, iPadOS 18.5) left the menu on screen after it, and after Home. On the main queue's next turn, never inside SpringBoard's
+// transition. Not while our Mac Switcher shows, nor while it is on and iPadOS's switcher was not asked for from the Apple menu (DMMSWStockOnce):
+// iPadOS's never comes by itself then, and the Mac Switcher's own open closes them (DMMSWOpenNow). Out of line: its own range in the crash map.
+static BOOL DMMSWIsOpen(void);   // (MacSwitcher.h)
+__attribute__((noinline)) static void DMSwitcherEnvCloseMenus(long long mode) {
+    if (mode != 2) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!DMMenusOfOursShown() || DMMSWIsOpen() || (gMSWOn && !DMMSWStockOnce())) return;
+        DM_FEATURE_MARK("app-switcher-closes-menus");
+        (void)DMCloseMenusForSwitcher(@"the App Switcher");
+    });
 }
 // The screen went off: every menu, panel or question goes, as it would a moment later on the Lock Screen (the tick's rule; the Fit question applies
 // the default arrangement, as for any other close). Before, they stayed until the next wake and a quick Face ID unlock could show them for ~0.5 s.
@@ -35833,13 +35864,57 @@ static BOOL DMA5DragAllowedAt(UIView *stage, CGPoint p) {   // p in the stage's 
     return p.y >= stripTop && p.y < stripBottom + 2.0 && p.x >= 0 && p.x <= stage.bounds.size.width;   // the title strip (plus the touch slop above it)
 }
 // A title-bar drag moves the window exactly as far as the finger (1.7.5 item 10): the window goes to where it was when the finger went down plus how
-// far the finger has moved since, on every move -- not Aerial's own deltas from wherever it left the window. Aerial moves by deltas from the drag's
-// start, some 10-13 pt after the finger went down (its recogniser's threshold), so the window used to fall that far behind; and Aerial keeps a
-// STAGE inside the screen on every move, while a window of ours at the side of the screen has its stage reaching past it by Aerial's margins (the
-// drawn window at the edge, MSBDStageFromWindowFrame): the first move pulled the stage in by those 6 pt and the drag ended 6 pt further than the
-// finger went on x (+200 -> +206, -200 -> -206: M1 15.6.1 and the 17.5, Aerial 5.1). Along x the window is kept as the finger has it, as far as
-// the drawn window stays on the screen; y as Aerial has it after the start (the stage's top is the drawn window's own: nothing to make up), the
-// title bar under the menu bar (-dragTrace:). The start point comes from the guard (every touch in the window is offered to it first).
+// far the finger has moved since, on every move, not Aerial's own deltas from wherever it left the window. Aerial moves by deltas from the drag's
+// start, some 10-13 pt after the finger went down (its recogniser's threshold), so the window used to fall that far behind (+200 -> +206 on x at the
+// side of the screen: M1 15.6.1 and the 17.5, Aerial 5.1). The start point comes from the guard (every touch in the window is offered to it first);
+// on Aerial 3.0 from our -handlePan: hook, before Aerial's step (DMAerialPanFollow).
+// 1.8.8.3 (GitHub #19; KT 24 Nov): on BOTH axes, with nothing held but the top, as Zetsu's, MilkyWay4's and our Stage Manager engine's
+// windows go: left, right and down as far as the finger or the pointer takes it (the point they hold stays on the screen), the title bar never above
+// the menu bar's line (DMTopLimit; 0 while the bar hides itself). Aerial's own step keeps the whole STAGE inside its window on every move: the centre
+// clamped to half the stage's size from each edge, x and y (read in Aerial 3.0's -handlePan:; the same min / max pair in 5.0's and 5.1's step, the
+// one AerialResolve.h takes for handlePan:; 5.1's drag area calls that step), so a window at an edge stopped 6 pt in at the sides (its stage's
+// margins) and 9 pt above the bottom, and 1.7.5 kept x at the drawn window's edge. None of Aerial 5's classes may be hooked: this target runs after
+// Aerial's step on the same recogniser, in the same touch event (nothing is drawn between them), and Aerial goes on from our place at its next step.
+// Not for a window in Aerial's own Lock (its step moves nothing then: DMAerialStageLocked); in its Trim mode the trim's baseline goes the rest of the
+// way with the window (DMAerialTrimFollow), as Aerial's step moves it by its own move. The place is kept at the end (-dragTrace:, -areaDrag:,
+// DMAerialGestureAfter): Aerial's fit pass puts back the frame its own step saved, its clamped one, unless ours is written over it.
+static CGFloat DMAerialDragTop(void) { return (DMA5MacGeometry() || gAerialFlavor == 3) ? DMTopLimit() : 0.0; }   // (Aerial 5's own look, debug: its own top)
+// Aerial's Lock Stage (its window menu): its _lockMode, read by name with its type checked (the ivar names survive Aerial 5's renaming)
+static BOOL DMAerialStageLocked(UIView *stage) {
+    static Class seen = Nil; static Ivar iv = NULL;
+    Class c = [stage class];
+    if (c != seen) {
+        seen = c; iv = class_getInstanceVariable(c, "_lockMode");
+        const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+        if (!t || (t[0] != 'B' && t[0] != 'c')) iv = NULL;
+    }
+    return iv && *((uint8_t *)(__bridge void *)stage + ivar_getOffset(iv)) != 0;
+}
+// Aerial's Trim mode: its step offsets the trim's baseline frame (_trimBaselineFrame, while _trimMode is on and it is not empty) by the move it made;
+// the rest of our move goes onto it too, so the trim's end puts the window back where it is.
+static void DMAerialTrimFollow(UIView *stage, CGFloat dx, CGFloat dy) {
+    static Class seen = Nil; static Ivar on = NULL, fr = NULL;
+    Class c = [stage class];
+    if (c != seen) {
+        seen = c; on = class_getInstanceVariable(c, "_trimMode"); fr = class_getInstanceVariable(c, "_trimBaselineFrame");
+        const char *to = on ? ivar_getTypeEncoding(on) : NULL, *tf = fr ? ivar_getTypeEncoding(fr) : NULL;
+        if (!to || (to[0] != 'B' && to[0] != 'c') || !tf || strncmp(tf, "{CGRect=", 8)) on = fr = NULL;
+    }
+    if (!on || !fr) return;
+    uint8_t *base = (uint8_t *)(__bridge void *)stage;
+    if (!base[ivar_getOffset(on)]) return;
+    CGRect *b = (CGRect *)(base + ivar_getOffset(fr));
+    if (!CGRectIsEmpty(*b)) *b = CGRectOffset(*b, dx, dy);
+}
+// A drop past an edge (once per drop, before the snap and the side Dock's keep-out): the line the device rows read, and the marker
+static void DMAerialDropNote(UIView *stage, UIGestureRecognizerState s) {
+    CGRect w = DMA5WindowFromStage(stage.frame);   // (the window as drawn: Aerial 5's stage less its margins; 3.0's stage is the window)
+    CGSize scr = stage.superview.bounds.size;
+    if (!(w.origin.x < -0.5 || CGRectGetMaxX(w) > scr.width + 0.5 || CGRectGetMaxY(w) > scr.height + 0.5)) return;
+    DM_FEATURE_MARK("aerial-past-edge");
+    DMLog([NSString stringWithFormat:@"[a5drag] %@ %@ past the screen's edge at %@ (screen %@), where the finger had it", DMStageBundle(stage),
+           s == UIGestureRecognizerStateCancelled ? @"moved (cut short)" : @"let go", NSStringFromCGRect(w), NSStringFromCGSize(scr)]);
+}
 static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began) {
     if (!stage.superview) return;
     NSArray *down = objc_getAssociatedObject(began ? stage : g, &kA5DragDownKey);
@@ -35847,19 +35922,52 @@ static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began)
         objc_setAssociatedObject(stage, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(g, &kA5DragDownKey, down, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (down.count != 2) return;
+    if (down.count != 2 || DMAerialStageLocked(stage)) return;   // (Aerial's Lock: its step moved nothing, nor does this)
     CGPoint d = [down[0] CGPointValue], c0 = [down[1] CGPointValue], now = [g locationInView:stage.superview];
     CGFloat dx = now.x - d.x, dy = now.y - d.y;
-    if (began && !(hypot(dx, dy) < 40)) { objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); return; }   // (not this drag's start)
-    UIEdgeInsets m = DMA5InsetsOf(stage);
-    CGFloat w = stage.frame.size.width, W = stage.superview.bounds.size.width;
-    CGFloat x = c0.x + dx, lo = w / 2.0 - m.left, hi = W - w / 2.0 + m.right;
-    if (hi >= lo) x = MAX(lo, MIN(x, hi));   // (the drawn window on the screen; its stage may reach past the sides by the margins)
-    CGPoint c = stage.center, want = CGPointMake(x, began ? c0.y + dy : c.y);
+    // (not this drag's start: 60 pt or more from where the pan began, every engine's limit -- ours, Zetsu's, MilkyWay4's. 1.8.8.3 review: 40 pt
+    //  here, while UIKit begins a pan up to 52 pt after the touch-down for a quick finger (17.5.1 device pass): such a drag was not followed, and
+    //  Aerial's own step kept the window inside the screen where the other engines took it past the edge)
+    if (began && !(hypot(dx, dy) < 60.0)) { objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); return; }
+    CGPoint c = stage.center, want = CGPointMake(c0.x + dx, MAX(c0.y + dy, DMAerialDragTop() + stage.frame.size.height / 2.0));   // (the top only: under the menu bar)
+    if (!isfinite(want.x) || !isfinite(want.y)) return;
     if (fabs(want.x - c.x) > 0.25 || fabs(want.y - c.y) > 0.25) {
         stage.center = want;
+        DMAerialTrimFollow(stage, want.x - c.x, want.y - c.y);
         if (began) DM_FEATURE_MARK("a5-drag-follows-finger");
     }
+    UIGestureRecognizerState s = g.state;
+    if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled) DMAerialDropNote(stage, s);
+}
+// Aerial 3.0 (its -handlePan: hooked; the 5.0 reference h5_pan the same): before Aerial's step, where a drag taken at its start (DMAerialPanBefore)
+// went down and where the window was -- noted as the touch began (DMAerial30NoteDown); none noted: where the recogniser began, its location less its
+// travel --; after it, the follow above.
+static void DMAerialPanFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL after) {
+    if (!stage.superview || ![g isKindOfClass:[UIPanGestureRecognizer class]]) return;
+    UIGestureRecognizerState s = g.state;
+    if (!after) {
+        if (s != UIGestureRecognizerStateBegan || ![objc_getAssociatedObject(g, kAerialHandStartKey) boolValue]) return;
+        // (1.8.8.3 review: the touch-down noted is kept. UIKit counts a pan's travel from where it begins it, about 10 to 50 pt after the finger
+        //  went down -- its location less its travel is that place, not the finger's: "drags from y 20 read as 30", DMAerialPanBefore --, so a
+        //  window of Aerial 3.0 trailed the finger by that way, as ours did before fix1883a)
+        if ([(NSArray *)objc_getAssociatedObject(stage, &kA5DragDownKey) count] == 2) return;
+        CGPoint p = [g locationInView:stage.superview], t = [g translationInView:stage.superview];
+        objc_setAssociatedObject(stage, &kA5DragDownKey, @[[NSValue valueWithCGPoint:CGPointMake(p.x - t.x, p.y - t.y)], [NSValue valueWithCGPoint:stage.center]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    if (s == UIGestureRecognizerStateBegan || s == UIGestureRecognizerStateChanged || s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled)
+        DMA5DragFollow(stage, g, s == UIGestureRecognizerStateBegan);
+    if (s != UIGestureRecognizerStateBegan && s != UIGestureRecognizerStateChanged) objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+// Aerial 3.0: where a finger goes down on a window -- every touch its title strip's double tap of ours is offered (TitleBarTap.h), the window's
+// whole stage, as Aerial 5's guard notes it (DMA5DragGuard) --, and where the window was then: the start of a drag that touch begins
+// (DMAerialPanFollow, DMA5DragFollow). Each touch-down replaces the last; a drag takes it at its start. (1.8.8.3 review; out of line: its own range
+// in the release crash map, the windows' -- not the title strip's double tap it is called from)
+__attribute__((noinline)) static void DMAerial30NoteDown(UIView *stage, UITouch *touch) {
+    if (gAerialFlavor != 3 || !stage.superview || !touch) return;
+    CGPoint p = [touch locationInView:stage.superview], c = stage.center;
+    if (!isfinite(p.x) || !isfinite(p.y) || !isfinite(c.x) || !isfinite(c.y)) return;
+    objc_setAssociatedObject(stage, &kA5DragDownKey, @[[NSValue valueWithCGPoint:p], [NSValue valueWithCGPoint:c]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 @interface DMA5DragGuard : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
@@ -35903,7 +36011,8 @@ static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began)
 - (void)dragTrace:(UIPanGestureRecognizer *)g {
     UIView *stage = g.view;
     UIGestureRecognizerState st = g.state;   // (its end too: Aerial's last move put right before the snap)
-    if (st == UIGestureRecognizerStateBegan || st == UIGestureRecognizerStateChanged || st == UIGestureRecognizerStateEnded) DMA5DragFollow(stage, g, st == UIGestureRecognizerStateBegan);
+    if (st == UIGestureRecognizerStateBegan || st == UIGestureRecognizerStateChanged || st == UIGestureRecognizerStateEnded || st == UIGestureRecognizerStateCancelled)   // (cut short too: Aerial's step clamps that one as well, 1.8.8.3)
+        DMA5DragFollow(stage, g, st == UIGestureRecognizerStateBegan);
     if (st != UIGestureRecognizerStateBegan && st != UIGestureRecognizerStateChanged) objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // Like a macOS window under the menu bar, a window's title bar is kept below our status bar (a drag could take it up over the status bar:
     // stage y 0, the window's title bar drawn over the menu titles). Aerial moves by deltas, so it simply goes on from the kept position.
@@ -35915,6 +36024,10 @@ static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began)
     if (g.state == UIGestureRecognizerStateEnded && stage.superview) DMSnapMoveEnded(stage);
     else if (g.state == UIGestureRecognizerStateCancelled) DMTitleRecordHandEnded(stage, g.state);   // (a move by hand cut short: review 1.8.3 L2)
     if (g.state == UIGestureRecognizerStateCancelled && stage.superview) DMBehindDockMoveEnded(stage);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
+    // (1.8.8.3: where it ends is its place at once, as Zetsu's drag keeps it: ours, and Aerial's own remembered frame for this screen shape
+    //  (DMKeepStagePlace). Aerial's step had just saved ITS place, inside the screen, which its fit pass puts back: a light or dark change, another
+    //  window or the Mac Switcher opening. The 0.2 s watcher remembered it only after that.)
+    if ((g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) && stage.superview) DMRememberStageFrame(stage);
     if (!DMTestFlag("/tmp/msb-a5-dragtrace")) return;
     DMLog([NSString stringWithFormat:@"[a5drag] trace state %ld location %@ translation %@ stage origin %@", (long)g.state, NSStringFromCGPoint([g locationInView:stage.superview]), NSStringFromCGPoint([g translationInView:stage.superview]), NSStringFromCGPoint(stage.frame.origin)]);
 }
@@ -35925,13 +36038,15 @@ static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began)
     UIView *stage = g.view.superview;
     if (!stage.superview || ![DMAerialStages() containsObject:stage]) return;
     if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) { DMA5DragFollow(stage, g, g.state == UIGestureRecognizerStateBegan); return; }   // (as -dragTrace:)
-    if (g.state == UIGestureRecognizerStateEnded) DMA5DragFollow(stage, g, NO);
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) DMA5DragFollow(stage, g, NO);
     objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (g.state == UIGestureRecognizerStateCancelled) DMTitleRecordHandEnded(stage, g.state);   // (a move by hand cut short: review 1.8.3 L2)
     if (g.state == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(stage);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
+    if (g.state == UIGestureRecognizerStateCancelled) DMRememberStageFrame(stage);   // (its place kept at once, as -dragTrace: keeps it: 1.8.8.3)
     if (g.state != UIGestureRecognizerStateEnded) return;
     if (stage.frame.origin.y < DMTopLimit() && DMA5MacGeometry()) { CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f; }
     DMSnapMoveEnded(stage);
+    DMRememberStageFrame(stage);
 }
 @end
 static void DMAerial5DragGuard(UIView *stage) {
@@ -43538,12 +43653,219 @@ static id DMSMEntityForStageItem(id stage, id item) {
     }
     return DMSMEntityIn(stage, b);
 }
+// ---- a window let go partly past the screen's edges stays there (1.8.8.3, GitHub #19: as Zetsu's and MilkyWay4's; the rule: SMPastEdge.h) ----------
+// The drop records it (DMSMPastEdgeDropped): its centre and size in points, on a screen of that size, where Stage Manager will lay it out. Our requests
+// (DMSMAttrsFitScreen) and Stage Manager's layout passes (16: DMSMPastEdgeBefore16 / After16 around its stage-area constraint; 17 and 18: DMSM17PassEnd)
+// keep a window standing at a recorded place there instead of fitting it inside the desktop; any other place is fitted as before. By the place, not
+// the window's key: iPadOS 17's auto-layout items carry no key. The drag's own move holds only its top under the menu bar (DMSMPastEdgeDragKept), as
+// every engine's drag; a resize by hand takes the record along (DMSMPastEdgeResizeBegan), as the other engines' resizes leave a window where it is.
+// Memory only (a respring's windows come back inside, as the other engines' restore fits them); the iPad's other shape's records go after a turn (every
+// engine's turn fits every window inside); at most 16, those of windows no longer in any stage dropped at each new record.
+static BOOL DMSMFree(void);
+static NSMutableDictionary<NSString *, NSArray<NSValue *> *> *gSMPastEdge;   // (window key -> @[centre, size, screen size], points)
+static NSMutableArray<NSString *> *gSMPastEdgeOrder;   // (the keys, oldest first)
+// A resize by hand of a recorded window (DMSMPastEdgeResizeBegan): its key, its card as the resize began (the record's place and size), the sides the
+// resize drags (SMPastEdge.h kDMSMPastEdgeLeft ...); until the next drag of a title bar or the next resize. One noted per resize in the log.
+static NSString *gSMPastEdgeResizeKey; static CGRect gSMPastEdgeResizeFrom; static unsigned gSMPastEdgeResizeSides; static BOOL gSMPastEdgeResizeTold;
+// That screen's Dock stands at its bottom (a TV's always; the iPad's unless Settings > Dock > Position puts it at a side in landscape): windows may go past.
+static BOOL DMSMPastEdgeAllowedOn(CGSize scr) {
+    CGSize main = [UIScreen mainScreen].bounds.size;
+    BOOL ipad = CGSizeEqualToSize(scr, main) || CGSizeEqualToSize(scr, CGSizeMake(main.height, main.width));
+    return !ipad || DMDockSideNow(scr) == MSBDDockBottom;
+}
+static void DMSMPastEdgeRemove(NSString *key) {
+    if (!key) return;
+    [gSMPastEdge removeObjectForKey:key];
+    [gSMPastEdgeOrder removeObject:key];
+    if ([gSMPastEdgeResizeKey isEqualToString:key]) gSMPastEdgeResizeKey = nil;
+}
+// A window at this centre and size, on a screen of this size, stands where the user let it go past an edge -- or it is the window a resize by hand
+// began on there, at its new size (its sides not dragged where they were, SMPastEdge.h DMSMPastEdgeResized): its record follows it to this place and
+// size, so it stays where it is, as on the other engines. (Also drops the iPad's other shape's records: the iPad turned since.)
+static BOOL DMSMPastEdgeHeld(CGPoint c, CGSize s, CGSize scr) {
+    if (!gSMPastEdge.count || !DMSMFree()) return NO;
+    CGSize main = [UIScreen mainScreen].bounds.size;
+    BOOL hit = NO; NSMutableArray<NSString *> *turned = nil;
+    for (NSString *k in gSMPastEdge) {
+        NSArray<NSValue *> *r = gSMPastEdge[k];
+        if (r.count != 3) continue;
+        CGSize rscr = r[2].CGSizeValue;
+        if (DMSMPastEdgeTurnedAway(rscr, main)) { if (!turned) turned = [NSMutableArray array]; [turned addObject:k]; continue; }
+        if (DMSMPastEdgeSame(c, s, scr, r[0].CGPointValue, r[1].CGSizeValue, rscr)) hit = YES;
+    }
+    NSMutableArray<NSString *> *names = turned.count ? [NSMutableArray array] : nil;
+    for (NSString *k in turned) { [names addObject:DMSMKeyText(k)]; DMSMPastEdgeRemove(k); }
+    if (turned.count) DMLog([NSString stringWithFormat:@"[smpast] the iPad turned: %lu window(s) let go past an edge are fitted into the desktop as every window (%@)", (unsigned long)turned.count, [names componentsJoinedByString:@", "]]);
+    NSArray<NSValue *> *rr = gSMPastEdgeResizeKey ? gSMPastEdge[gSMPastEdgeResizeKey] : nil;
+    CGSize rrs = rr.count == 3 ? rr[2].CGSizeValue : CGSizeZero;   // (the followed window's screen: only a window on a screen of that size)
+    if (!hit && rr.count == 3 && fabs(scr.width - rrs.width) < 0.5 && fabs(scr.height - rrs.height) < 0.5 && DMSMPastEdgeResized(c, s, gSMPastEdgeResizeFrom, gSMPastEdgeResizeSides)) {
+        hit = YES;
+        if (!DMSMPastEdgeSame(c, s, scr, rr[0].CGPointValue, rr[1].CGSizeValue, rr[2].CGSizeValue)) {
+            gSMPastEdge[gSMPastEdgeResizeKey] = @[[NSValue valueWithCGPoint:c], [NSValue valueWithCGSize:s], rr[2]];
+            DM_FEATURE_MARK("sm-past-edge-resized");
+            if (!gSMPastEdgeResizeTold) {
+                gSMPastEdgeResizeTold = YES;
+                DMLog([NSString stringWithFormat:@"[smpast] %@ resized by hand past the screen's edge: it stays where it is (centre %@, size %@)", DMSMKeyText(gSMPastEdgeResizeKey), NSStringFromCGPoint(c), NSStringFromCGSize(s)]);
+            }
+        }
+    }
+    return hit && DMSMPastEdgeAllowedOn(scr);
+}
+// A resize by hand begins (SMResizeAnchor.h's gesture hook, 16 and 17 / 18): the card as it began (start, in its screen's points) and the sides it drags
+// (SMPastEdge.h kDMSMPastEdgeLeft ...). A recorded window's card there (one, every side within 3 pt) is followed: its record goes along with its new size
+// (DMSMPastEdgeHeld). Any other resize ends a follow.
+static void DMSMPastEdgeResizeBegan(unsigned dragged, CGRect start) {
+    gSMPastEdgeResizeKey = nil; gSMPastEdgeResizeTold = NO;
+    if (!gSMPastEdge.count || !DMSMFree()) return;
+    if (!dragged || !DMSMPastEdgeFiniteRect(start)) {   // (the resize's edge or its card not read: nothing followed)
+        static int told = 0;
+        if (told < 3) { told++; DMLog(@"[smpast] a resize began whose edge or card could not be read: a window past an edge resized now is fitted inside"); }
+        return;
+    }
+    NSString *hit = nil; int n = 0;
+    for (NSString *k in gSMPastEdge) {
+        NSArray<NSValue *> *r = gSMPastEdge[k];
+        if (r.count == 3 && DMSMPastEdgeSameCard(start, r[0].CGPointValue, r[1].CGSizeValue)) { hit = k; n++; }
+    }
+    if (n > 1) DMLog([NSString stringWithFormat:@"[smpast] a resize began on %@, where %d windows past an edge were let go: not followed", NSStringFromCGRect(start), n]);
+    if (n != 1) return;   // (none, or two alike: not followed -- its new size then matches no record, and it is fitted inside as before)
+    NSArray<NSValue *> *r = gSMPastEdge[hit];
+    CGPoint c = r[0].CGPointValue; CGSize z = r[1].CGSizeValue;
+    gSMPastEdgeResizeKey = hit; gSMPastEdgeResizeSides = dragged;
+    gSMPastEdgeResizeFrom = CGRectMake(c.x - z.width / 2.0, c.y - z.height / 2.0, z.width, z.height);
+    DM_FEATURE_MARK("sm-past-edge-resize");
+}
+// Our request for a recorded window (DMSMAttrsFitScreen): its centre *cp kept by the rule in the desktop u as it is now: its top under the desktop's top
+// (a taller menu bar since: moved down only as far as that, and the record follows it); nothing else -- a Dock grown since may cover its title bar, as
+// with the other engines. YES when it moved.
+static BOOL DMSMPastEdgeKeepIn(CGPoint *cp, CGSize pts, CGSize scr, CGRect u) {
+    if (!cp) return NO;
+    CGPoint k = DMSMPastEdgeCardCenter(*cp, pts, u, kSMBarH);
+    DM_FEATURE_MARK("sm-past-edge-kept");
+    if (fabs(k.x - cp->x) < 0.5 && fabs(k.y - cp->y) < 0.5) return NO;
+    for (NSString *key in [gSMPastEdge allKeys]) {
+        NSArray<NSValue *> *r = gSMPastEdge[key];
+        if (r.count == 3 && DMSMPastEdgeSame(*cp, pts, scr, r[0].CGPointValue, r[1].CGSizeValue, r[2].CGSizeValue))
+            gSMPastEdge[key] = @[[NSValue valueWithCGPoint:k], r[1], r[2]];
+    }
+    DMLog([NSString stringWithFormat:@"[smpast] a window past an edge at %@ kept to the desktop as it is now (%@): %@", NSStringFromCGPoint(*cp), NSStringFromCGRect(u), NSStringFromCGPoint(k)]);
+    *cp = k;
+    return YES;
+}
+// The desktop of the screen s of this size as our requests read it (DMSMUsableAreaForIdentity: under its menu bar, down to its Dock's line), for the
+// drag's hold and the layout passes' keep. CGRectNull when the desktop read is not that screen's: a TV whose display is not read is never held to the
+// iPad's desktop.
+static CGRect DMSMPastEdgeDeskOn(UIScreen *s, CGSize size) {
+    if (!s || !CGSizeEqualToSize(s.bounds.size, size)) return CGRectNull;
+    CGSize got = CGSizeZero;
+    CGRect u = DMSMUsableAreaForIdentity(s == [UIScreen mainScreen] ? nil : DMSMIdentityOfScreen(s), &got);
+    return CGSizeEqualToSize(got, size) ? u : CGRectNull;
+}
+// Stage Manager's layout passes (16: DMSMPastEdgeBefore16; 17 and 18: DMSM17PassEnd, handed this): YES for a window at a recorded place (or the window a
+// resize by hand of one is changing), and in *keep the place it keeps -- by the rule against its screen's desktop as it is now, as our requests keep it
+// (DMSMPastEdgeKeepIn): its top under the desktop's top, the record with it; a Dock grown since (Icon Size, fewer apps) moves nothing, as with the other
+// engines.
+static BOOL DMSMPastEdgeHeldAt(CGPoint c, CGSize s, CGSize scr, CGPoint *keep) {
+    if (!DMSMPastEdgeHeld(c, s, scr)) return NO;
+    CGPoint k = c;
+    CGRect u = DMSMPastEdgeDeskOn(DMSMScreenOfSize(scr), scr);
+    if (DMSMPastEdgeFiniteRect(u)) (void)DMSMPastEdgeKeepIn(&k, s, scr, u);
+    if (keep) *keep = k;
+    return YES;
+}
+// The drag of a title bar: the desktop it is held in, read once at its start (the screen the card is on: the iPad's desktop, or the TV's). A drag also
+// ends the follow of a resize by hand (DMSMPastEdgeResizeBegan).
+static CGRect gSMPastEdgeDesk; static CGSize gSMPastEdgeScreen; static BOOL gSMPastEdgeStopped;
+static void DMSMPastEdgeDragBegin(UIView *card) {
+    UIScreen *scr = card.window.screen ?: [UIScreen mainScreen];
+    gSMPastEdgeScreen = scr.bounds.size;
+    gSMPastEdgeDesk = DMSMPastEdgeDeskOn(scr, gSMPastEdgeScreen);
+    gSMPastEdgeStopped = NO;
+    gSMPastEdgeResizeKey = nil;
+}
+// The drag's travel t (in the card's superview) held to the rule: the window as drawn there (our bar and the card, read with the drag's own transform,
+// as the drop reads it) with its top under the menu bar, as Aerial's, Zetsu's and MilkyWay4's drags hold a title bar (DMTopLimit), and the travel
+// that puts it there. Left, right and down the window follows the finger (the point it holds stays on the screen), with the Dock anywhere.
+static CGPoint DMSMPastEdgeDragKept(UIView *card, CGPoint t) {
+    UIView *sup = card.superview;
+    UIScreen *scr = card.window.screen ?: [UIScreen mainScreen];
+    if (!sup || !DMSMFree() || !isfinite(t.x) || !isfinite(t.y)) return t;
+    if (!CGSizeEqualToSize(scr.bounds.size, gSMPastEdgeScreen) || !DMSMPastEdgeFiniteRect(gSMPastEdgeDesk)) DMSMPastEdgeDragBegin(card);   // (no start seen)
+    if (!DMSMPastEdgeFiniteRect(gSMPastEdgeDesk)) return t;
+    CGAffineTransform was = card.transform;
+    card.transform = CGAffineTransformMakeTranslation(t.x, t.y);
+    CGRect c = [card convertRect:card.bounds toCoordinateSpace:scr.coordinateSpace];
+    card.transform = was;
+    CGRect w = CGRectMake(c.origin.x, c.origin.y - kSMBarH, c.size.width, c.size.height + kSMBarH);
+    CGRect k = DMSMPastEdgeKeep(w, gSMPastEdgeDesk);
+    if (fabs(k.origin.x - w.origin.x) < 0.01 && fabs(k.origin.y - w.origin.y) < 0.01) return t;
+    CGPoint a = [sup convertPoint:w.origin fromCoordinateSpace:scr.coordinateSpace], b = [sup convertPoint:k.origin fromCoordinateSpace:scr.coordinateSpace];
+    if (!gSMPastEdgeStopped) {
+        gSMPastEdgeStopped = YES;
+        DM_FEATURE_MARK("sm-past-edge-limit");
+        DMLog([NSString stringWithFormat:@"[smpast] the drag stops under the menu bar: the window %@ held at %@ (desktop %@)", NSStringFromCGRect(w), NSStringFromCGRect(k), NSStringFromCGRect(gSMPastEdgeDesk)]);
+    }
+    return CGPointMake(t.x + (b.x - a.x), t.y + (b.y - a.y));
+}
+// The drop (after its snap): the card where it ends on the screen (snapped: its middle at `at`, a share of the screen; else as dropped) and the place
+// asked for (`at`, or `plain`: the dropped middle's share of the stage view). Past the screen's left, right or bottom edge: recorded where Stage
+// Manager will lay it out -- the place asked for in the screen's points, the size its attributes give (as DMSMAttrsFitScreen reads it; else the
+// card's). Any other drop takes the window's record away.
+static void DMSMPastEdgeDropped(NSString *key, UIScreen *scn, CGRect droppedOnScreen, BOOL snapped, CGPoint at, CGPoint plain) {
+    if (!key.length || !scn) return;
+    CGSize S = scn.bounds.size;
+    CGPoint asked = snapped ? at : plain;
+    BOOL ok = DMSMFree() && isfinite(asked.x) && isfinite(asked.y) && S.width > 0 && S.height > 0 && DMSMPastEdgeFiniteRect(droppedOnScreen);
+    CGRect card = droppedOnScreen;
+    if (ok && snapped) card = CGRectMake(at.x * S.width - card.size.width / 2.0, at.y * S.height - card.size.height / 2.0, card.size.width, card.size.height);
+    CGRect whole = CGRectMake(card.origin.x, card.origin.y - kSMBarH, card.size.width, card.size.height + kSMBarH);
+    BOOL past = ok && DMSMPastEdgeAllowedOn(S) && DMSMPastEdgeOut(whole, CGRectMake(0, 0, S.width, S.height));
+    BOOL had = gSMPastEdge[key] != nil;
+    DMSMPastEdgeRemove(key);
+    if (!past) {
+        if (had) DMLog([NSString stringWithFormat:@"[smpast] %@ let go inside the screen at %@: no longer past an edge", DMSMKeyText(key), NSStringFromCGRect(whole)]);
+        return;
+    }
+    CGSize size = card.size;
+    id attrs = nil;
+    DMSMAttributedSize sz;
+    if (DMSMItemFor(DMSMStageOf(key), key, &attrs) && attrs && DMSMAttrAttributedSize(attrs, &sz)) {
+        CGSize p = DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, sz.type, S);
+        if (p.width > 0 && p.height > 0) size = p;
+    }
+    if (!gSMPastEdge) { gSMPastEdge = [NSMutableDictionary dictionary]; gSMPastEdgeOrder = [NSMutableArray array]; }
+    NSSet<NSString *> *present = gSMPastEdge.count ? DMSMWindowKeysIn(DMSMRecentStages()) : nil;   // (nil: a stage not read whole -- nothing taken for gone)
+    for (NSString *k in [gSMPastEdgeOrder copy]) if (present && !DMSMKeysHold(present, k)) DMSMPastEdgeRemove(k);   // (a window's key or its app's: as the stages name them)
+    while (gSMPastEdgeOrder.count >= 16) DMSMPastEdgeRemove(gSMPastEdgeOrder.firstObject);
+    CGPoint centre = CGPointMake(asked.x * S.width, asked.y * S.height);
+    gSMPastEdge[key] = @[[NSValue valueWithCGPoint:centre], [NSValue valueWithCGSize:size], [NSValue valueWithCGSize:S]];
+    [gSMPastEdgeOrder addObject:key];
+    DM_FEATURE_MARK("sm-past-edge-drop");
+    DMLog([NSString stringWithFormat:@"[smpast] %@ let go past the screen's edge at %@ (screen %@): it stays there (centre %@, size %@)", DMSMKeyText(key), NSStringFromCGRect(whole), NSStringFromCGSize(S), NSStringFromCGPoint(centre), NSStringFromCGSize(size)]);
+}
 // ---- a window's place as Stage Manager reads it, fitted into the desktop of its screen (SMFit.h, Mac test tools/test-smfit.sh) ------------------------
 // The card area of a screen's desktop (u: DMSMUsableAreaFor..., the window area under the menu bar, above the Dock): under our title bar as well;
 // behindDock: down to the screen's bottom edge (a window the user dragged behind the Dock keeps that place, gSMBehindDock).
 static CGRect DMSMCardDesk(CGRect u, CGSize scr, BOOL behindDock) {
     CGFloat top = CGRectGetMinY(u) + kSMBarH, bottom = behindDock ? scr.height : CGRectGetMaxY(u);
     return CGRectMake(CGRectGetMinX(u), top, CGRectGetWidth(u), bottom - top);
+}
+// A window coming back at its own place as it joins a desktop (DMSMJoinAttributesOn: minimized and opened again -- its Dock icon, the Home Screen,
+// Command-Tab, the App Switcher --, or back from our full screen at its place before): where the user left it, as our requests keep a window
+// (DMSMAttrsFitScreen) and as Aerial's, Zetsu's and MilkyWay4's windows come back from minimized where they were (DMSurfaceWindowForApp): let go
+// partly past the screen's edge (its record, kept by the rule against the desktop as it is now, DMSMPastEdgeHeldAt), or put behind the Dock
+// (gSMBehindDock: inside the screen down to its bottom). Any other is fitted inside the desktop above the Dock, as before. (1.8.8.3: a window let
+// go past the right edge, minimized by its yellow light or by Home and opened again from its Dock icon came back inside, its right edge on the
+// screen's: 16.7.7 device pass; one behind the Dock came back above it.) pts and cp: the card's size and centre in points of the screen scr, u its desktop.
+static void DMSMJoinOwnPlace(NSString *key, CGSize *pts, CGPoint *cp, CGSize scr, CGRect u) {
+    CGPoint keep = *cp;
+    if (DMSMPastEdgeHeldAt(*cp, *pts, scr, &keep)) {
+        DM_FEATURE_MARK("sm-past-edge-join");
+        DMLog([NSString stringWithFormat:@"[smpast] %@ comes back at its place past the screen's edge (centre %@, size %@)", DMSMKeyText(key), NSStringFromCGPoint(keep), NSStringFromCGSize(*pts)]);
+        *cp = keep;
+        return;
+    }
+    DMSMFitInDesk(pts, cp, DMSMCardDesk(u, scr, DMSMKeySetHas(gSMBehindDock, key)));
 }
 // A window's attributes made to fit the screen of `identity` as it is NOW: the size read in points of its OWN reference rectangle (Stage Manager reads
 // a size as a fraction of the reference kept with the attributes, not of the screen -- a window made in portrait keeps portrait's after a turn, so
@@ -43569,7 +43891,10 @@ static id DMSMAttrsFitScreen(id attrs, id identity, BOOL behindDock, NSString *b
     CGSize pts = DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, sz.type, scr), was = pts;
     if (pts.width <= 0 || pts.height <= 0) return attrs;   // (a size Stage Manager works out itself: its grid caps it, _nearestGridSizeForSize)
     CGPoint cp = CGPointMake(c.x * scr.width, c.y * scr.height), wasC = cp;
-    if (!DMSMFitInDesk(&pts, &cp, DMSMCardDesk(u, scr, behindDock))) return attrs;
+    // (1.8.8.3: a window the user let go partly past the screen's edge, at that very place, keeps it -- by SMPastEdge.h's rule against the desktop as
+    //  it is now; every other window is fitted inside)
+    if (DMSMPastEdgeHeld(cp, pts, scr)) { if (!DMSMPastEdgeKeepIn(&cp, pts, scr, u)) return attrs; }
+    else if (!DMSMFitInDesk(&pts, &cp, DMSMCardDesk(u, scr, behindDock))) return attrs;
     DMSMAttributedSize ns = sz;
     ns.normalizedSize = CGSizeMake(pts.width / scr.width, pts.height / scr.height); ns.type = 0;
     ns.referenceBounds = CGRectMake(0, 0, scr.width, scr.height);
@@ -44155,7 +44480,9 @@ static id DMSMJoinAttributesOn(NSString *key, id frontAttrs, BOOL windowed, long
                 CGRect card = MSBDWindowCardOf(placed, kSMBarH);   // (the card: under our title bar)
                 pts = card.size; cp = CGPointMake(CGRectGetMidX(card), CGRectGetMidY(card));
             }
-            if (!CGRectIsEmpty(u) && !CGRectIsNull(u)) DMSMFitInDesk(&pts, &cp, DMSMCardDesk(u, scr, NO));   // (a desktop too small to hold a window -- never seen -- leaves it as it is)
+            // (a new window inside the desktop above the Dock; one at its own place where the user left it -- past an edge, behind the Dock --, else as
+            //  a new one: DMSMJoinOwnPlace, 1.8.8.3. A desktop too small to hold a window -- never seen -- leaves it as it is)
+            if (!CGRectIsEmpty(u) && !CGRectIsNull(u)) { if (fresh) DMSMFitInDesk(&pts, &cp, DMSMCardDesk(u, scr, NO)); else DMSMJoinOwnPlace(key, &pts, &cp, scr, u); }
             sz.normalizedSize = CGSizeMake(pts.width / scr.width, pts.height / scr.height);
             sz.referenceBounds = CGRectMake(0, 0, scr.width, scr.height);
             c = CGPointMake(cp.x / scr.width, cp.y / scr.height);
@@ -44419,6 +44746,16 @@ static void DMSMBringToFront(NSString *key) {   // (newest interaction time in t
 @property (nonatomic, strong) UILabel *title;
 @property (nonatomic, strong) NSArray<UIButton *> *lights;
 @property (nonatomic, weak) UIView *card;
+// (1.8.8.3: where the finger or the pointer went down on the bar -- that touch, its window, the point in that window -- noted by the drag's
+//  -gestureRecognizer:shouldReceiveTouch:; a second touch while it is down (downTwo); and the drag that follows it (-dm_pan:): its finger
+//  (followTouch), where UIKit began the pan and the finger's way before that, in the card's superview; how much of that way is taken in (caught);
+//  the finger's last point and the window's last way (lastAt, lastWay); and, once that finger is lifted while another goes on, the way from UIKit's
+//  translation to the window's (handOff, handed))
+@property (nonatomic, weak) UITouch *downTouch, *followTouch;
+@property (nonatomic, weak) UIWindow *downWindow;
+@property (nonatomic) CGPoint downAt, panBegan, panBefore, lastAt, lastWay, handOff;
+@property (nonatomic) CGFloat caught;
+@property (nonatomic) BOOL downTwo, follows, handed;
 @end
 static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 1 s after: the stage area reaches the screen bottom, _stageAreaForModel)
 // Our Stage Manager title bar's drag (-dm_pan:) has ended with the finger's travel t (in the card's superview): YES and the place to ask for when it
@@ -44522,6 +44859,11 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
 //  -- is SpringBoard's live resize, not a move. Only the pointer's: SpringBoard resizes with the pointer alone, so a finger always moves the window)
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)t {
     if (t.type == UITouchTypeIndirectPointer && DMSMPointerOnResizeEdge(_card)) return NO;
+    // (1.8.8.3: where it goes down, for the drag to follow from there, -dm_pan:. Another touch while the noted one is still down: a two-finger
+    //  pan, its middle no finger's point -- that drag goes by UIKit's translation, as before)
+    UITouch *had = _downTouch;
+    if (had && had != t && had.phase != UITouchPhaseEnded && had.phase != UITouchPhaseCancelled) _downTwo = YES;
+    else { _downTouch = t; _downWindow = t.window; _downAt = [t locationInView:nil]; _downTwo = NO; }
     return YES;
 }
 - (void)dm_pan:(UIPanGestureRecognizer *)g {
@@ -44536,6 +44878,55 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
     if (!card || !sup) return;
     CGPoint t = [g translationInView:sup];
     NSString *w = _key ?: _bundle;
+    // (1.8.8.3: the window follows the finger -- or the pointer -- from where it went down on the bar, as Zetsu's, Aerial's and MilkyWay4's windows
+    //  do (DMZetsuBarPan, DMA5DragFollow, DMMWResizeCatchUp). UIKit begins a pan only once the finger has moved its hysteresis, about 10 pt and more
+    //  for a quick finger, and counts the translation from there: the window trailed the finger by that for the whole drag and was let go 9 to 52 pt
+    //  short of where the finger took it, where Zetsu's ended exactly there with the same finger (17.5.1 and 16.7.7 device passes). The way before
+    //  the pan began is taken in over the finger's next 24 pt (at least twice that way): no jump as the window starts to move, then exactly with
+    //  the finger; at the let go, the whole way. Not followed -- UIKit's translation, as before -- for a pan begun with two touches, a touch-down
+    //  that was not this touch's (it ended, or was never seen), another window's, or one 60 pt or more from where the pan began (every engine's
+    //  limit: Zetsu's, Aerial's, MilkyWay4's).)
+    BOOL end = g.state != UIGestureRecognizerStateBegan && g.state != UIGestureRecognizerStateChanged;
+    if (g.state == UIGestureRecognizerStateBegan) {
+        UITouch *dt = _downTouch;
+        _follows = NO; _handed = NO; _caught = 0; _followTouch = nil;
+        if (dt && !_downTwo && _downWindow && _downWindow == sup.window && g.numberOfTouches == 1 && dt.phase != UITouchPhaseEnded && dt.phase != UITouchPhaseCancelled) {
+            CGPoint down = [sup convertPoint:_downAt fromView:nil], now = [dt locationInView:sup];
+            CGPoint before = CGPointMake(now.x - down.x, now.y - down.y);
+            if (isfinite(before.x) && isfinite(before.y) && hypot(before.x, before.y) < 60.0) { _follows = YES; _followTouch = dt; _panBegan = _lastAt = now; _panBefore = before; _lastWay = CGPointZero; }
+        }
+    }
+    BOOL followed = _follows;
+    if (followed) {
+        // (that finger's own point, not the pan's: another finger put on the bar during the drag moves nothing -- the pan's point is the
+        //  touches' middle, which jumped halfway to it; UIKit's translation made up for that, the finger's own point needs nothing. That very
+        //  finger (followTouch): a touch put down on the bar meanwhile is the next drag's)
+        UITouch *ft = _followTouch;
+        if (!end && (!ft || ft.phase == UITouchPhaseEnded || ft.phase == UITouchPhaseCancelled)) {
+            // (review: that finger lifted while another goes on with the pan -- UIKit goes on with the other one: from here the window goes by
+            //  UIKit's translation, which carries on across a finger lifted, from where the window is now: no jump, the drag not lost. Read by
+            //  the lifted finger, the window stopped where that finger left it, or, once UIKit let that touch go, jumped to the other's point)
+            _follows = followed = NO; _handed = YES;
+            _handOff = CGPointMake(_lastWay.x - t.x, _lastWay.y - t.y);
+        } else {
+            CGPoint now = ft ? [ft locationInView:sup] : _lastAt, since = CGPointMake(now.x - _panBegan.x, now.y - _panBegan.y), b = _panBefore;
+            // (taken in as the finger goes from where the pan began, and never given back: a finger that turns back toward there keeps the
+            //  window with it -- review: read from its distance alone, the way came back, the window moving up to half as fast again as the
+            //  finger on its way back and the rest at the let go)
+            _caught = end ? 1.0 : MAX(_caught, MIN(1.0, hypot(since.x, since.y) / MAX(24.0, 2.0 * hypot(b.x, b.y))));
+            if (isfinite(since.x) && isfinite(since.y) && isfinite(_caught)) { t = CGPointMake(since.x + b.x * _caught, since.y + b.y * _caught); _lastAt = now; _lastWay = t; }
+            if (end) _follows = NO;
+        }
+    }
+    BOOL handed = _handed;
+    if (handed) {
+        t = CGPointMake(t.x + _handOff.x, t.y + _handOff.y);
+        if (end) _handed = NO;
+    }
+    // (1.8.8.3: the drag held to SMPastEdge.h's rule at every move -- the top under the menu bar, as every engine holds a title bar; past the screen's
+    //  left, right and bottom edges as far as the finger takes it -- so the window stops under the menu bar instead of jumping at the drop)
+    if (g.state == UIGestureRecognizerStateBegan) DMSMPastEdgeDragBegin(card);
+    else t = DMSMPastEdgeDragKept(card, t);
 #if DEBUG
     if (DMTestFlag("/tmp/msb-smdragtrace")) {   // (debug, 1.7.4 item 13: the drag's states with the card's anchor, centre, transform and frame on the screen)
         static CFTimeInterval began = 0, lastAt = 0;
@@ -44582,11 +44973,15 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
             if (w.length) { if (endsAt > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }
         }
         CGSize b = sup.bounds.size;
+        // (1.8.8.3: let go past the screen's left, right or bottom edge -- where it ends after its snap --: recorded, so it stays there; else not)
+        DMSMPastEdgeDropped(w, scn, droppedOnScreen, snapped, at, b.width > 0 && b.height > 0 ? CGPointMake(mid.x / b.width, mid.y / b.height) : CGPointMake(NAN, NAN));
         card.transform = CGAffineTransformIdentity;
         card.center = c;   // (in place at once; the stage then lays itself out there)
         if (snapped) DMSMSetWindowGeometry(w, at, CGSizeZero);
         else if (b.width > 0 && b.height > 0) DMSMSetWindowGeometry(w, CGPointMake(mid.x / b.width, mid.y / b.height), CGSizeZero);
-        DMLog([NSString stringWithFormat:@"[smchrome] %@ moved by %@", DMSMKeyText(w), NSStringFromCGPoint(t)]);
+        DMLog([NSString stringWithFormat:@"[smchrome] %@ moved by %@%@", DMSMKeyText(w), NSStringFromCGPoint(t),
+               followed ? [NSString stringWithFormat:@" (the finger's whole way from where it went down; UIKit's pan began %@ after it)", NSStringFromCGPoint(_panBefore)]
+               : handed ? @" (the finger's way from where it went down, then UIKit's translation: another finger went on with the drag)" : @" (UIKit's translation: no touch-down to follow from)"]);
     }
 }
 @end
@@ -45193,7 +45588,7 @@ static void DMBarFrontInUseFollow(void) { MSBDInUseFollow(&gDMInUse); }   // (an
 // named there, after a transition the hold kept from taking the display in use (DMBarFrontInUseRead) to that stage's app, and after the user made a
 // window on a display the active one (DMBarFrontInUseUser) they may stay with the app that was active. Asked for the active window, as a tap in it
 // asks, only while they sit with that other app (acted: its window; nil: any app but the active window's), and only with a hardware keyboard (as
-// DMKBGiveBack: without one, the ask brought an app's on-screen keyboard up). Read every 0.5 s, left times: with the active window's app, done;
+// DMKBGiveBack: without one, the ask brought an app's on-screen keyboard up). Read every 0.5 s, left times: with the active window's app, done (acted's: read again, its transition may not have ended);
 // with SpringBoard itself (one of our menus, the Mac Switcher, Spotlight: it gives them back where they were when it closes), while one of our menus
 // or dialogs is open (its keys: the menu bar's menus leave them with the app, as on a Mac) or with another app than acted's, read again; with that app, asked -- and read again, asked again while they stay there, 3 asks at most (one ask did not always move them:
 // iPadOS 18.5, a click in Settings' window while Tips on the TV had them, 1.8.8.2).
@@ -45213,7 +45608,10 @@ static NSString *DMBarFrontKeysHolder(void) {
 static void DMBarFrontInUseKeysStep(NSString *acted, int left, int asks) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         NSString *active = DMSMFrontWindowKey(), *ab = DMSMKeyBundle(active), *xb = DMSMKeyBundle(acted), *holder = DMBarFrontKeysHolder();
-        if (!ab.length || !holder || [holder isEqualToString:ab] || !DMHardwareKeyboardAttached()) return;
+        if (!ab.length || !holder || !DMHardwareKeyboardAttached()) return;
+        // (with the active window's app: done -- after an action from the other display's bar (acted), read again while the reads last: the
+        //  transition it asked hands that display's window the keys at its end, 0.7 s after the click on iPadOS 18.5, after the first read, 1.8.8.3)
+        if ([holder isEqualToString:ab]) { if (acted.length && left > 1) DMBarFrontInUseKeysStep(acted, left - 1, asks); return; }
         if (!holder.length || gOverlay || (xb.length && ![holder isEqualToString:xb])) { if (left > 1) DMBarFrontInUseKeysStep(acted, left - 1, asks); return; }   // (gOverlay: our menu or dialog open: its keys)
         if (asks <= 0) { DMLog([NSString stringWithFormat:@"[inuse] the keys stayed with %@ after 3 asks for %@", holder, DMSMKeyText(active)]); return; }
         NSString *uid = DMSMKeyUid(active);
@@ -45236,7 +45634,18 @@ __attribute__((noinline)) static void DMBarFrontInUseBarAction(NSString *key) {
     MSBDInUseBarAction(&gDMInUse, onOther ? 1 : 0, CACurrentMediaTime());
     DM_FEATURE_MARK("display-in-use-held");
     DMLog([NSString stringWithFormat:@"[inuse] %@: an action from its display's bar -- the display in use stays %@", DMSMKeyText(key), gDMInUse.inUse ? @"the other display" : @"the iPad"]);
-    DMBarFrontInUseKeysBack([key copy], 3);
+    DMBarFrontInUseKeysBack([key copy], 5);   // (read until the hold is over, kMSBDInUseBarHold: 2.5 s)
+}
+// A transition on that window scene's display is about to hand its stage's front window the keyboard's keys (SpringBoard's switcher, at the
+// transition's end: SMSpotKeyboard.h): YES when they stay where they are -- that display is not the one in use and the display in use is held
+// (common/DisplayInUse.h MSBDInUseKeepsKeys), with a hardware keyboard (as DMBarFrontInUseKeysBack: without one the keys are the on-screen
+// keyboard's, as iPadOS has them). 1.8.8.3: the TV bar's green with the iPad's app active (iPadOS 18.5) -- the zoom back's transition ended 0.7 s
+// after the click and gave the TV's app the keys, after the ask-back's first read had found them still with the iPad's app and stopped. The iPad
+// alone, the crash guard's piece off, another engine: NO (Apple's way).
+__attribute__((noinline)) static BOOL DMBarFrontInUseKeepsKeys(UIWindowScene *screen) {
+    if (!screen || DMBarFrontSkipped() || !DMSMEngine() || !gDMInUseOther || !DMHardwareKeyboardAttached() || !DMBarFrontInUseScreen(gDMInUseOther)) return NO;
+    int d = screen.screen == [UIScreen mainScreen] ? 0 : [DMSMIdentityOfScreen(screen.screen) isEqual:gDMInUseOther] ? 1 : -1;
+    return d >= 0 && MSBDInUseKeepsKeys(&gDMInUse, d, CACurrentMediaTime());
 }
 // ---- one piece: our title bar and Apple's window card --------------------------------------------------------------------------------------------
 // The card's page view rounds all four corners (its content clip, SBAsymmetricalCornerRadiusWrapperView, and its shadow follow its maskedCorners),
@@ -48180,8 +48589,47 @@ static void DMSMConstrainEdges16(id m, CGRect area, int vertical) {
         if (logged < 30) { logged++; DMLog([NSString stringWithFormat:@"[sm] %@ (%.0f x %.0f pt) bigger than the stage area %@: %@ edge kept inside, center %@ -> %@", DMSMItemBundle(it) ?: @"a window", s.width, s.height, NSStringFromCGRect(area), vertical ? @"top" : @"left", NSStringFromCGPoint(was), NSStringFromCGPoint(c)]); }
     }
 }
-static void DMSMConstrainV16(id self, SEL _cmd, id m, CGRect area) { o_SMConstrainV(self, _cmd, m, area); DMSMConstrainEdges16(m, area, 1); }
-static void DMSMConstrainH16(id self, SEL _cmd, id m, CGRect area) { o_SMConstrainH(self, _cmd, m, area); DMSMConstrainEdges16(m, area, 0); }
+// 1.8.8.3 (SMPastEdge.h): a window the user let go partly past the screen's edge, standing at that very place (DMSMPastEdgeHeldAt), keeps it through
+// this step: its place read before Apple's constraint (by the rule against the desktop as it is now: its top under the menu bar; the window a resize
+// by hand of one is changing too, DMSMPastEdgeHeld) and given back after it (and after the rule above). Its top above the area's top, or the container
+// unknown: kept inside as any other. nil: no such window.
+static NSArray<NSArray *> *DMSMPastEdgeBefore16(id m, CGRect area) {
+    if (!gSMPastEdge.count || !DMSMFree() || !DMSMRectSane(area)) return nil;
+    SEL itemsS = NSSelectorFromString(@"items"), sizeS = NSSelectorFromString(@"sizeForItem:"), centerS = NSSelectorFromString(@"centerForItem:");
+    SEL setS = NSSelectorFromString(@"setCenter:forItem:"), contS = NSSelectorFromString(@"containerBounds");
+    if (!DMSMSigOK(m, itemsS, DMSMSigObj(), "items") || !DMSMSigOK(m, sizeS, DMSMSigSizeFor(), "sizeForItem:") || !DMSMSigOK(m, centerS, DMSMSigCenterFor(), "centerForItem:")
+        || !DMSMSigOK(m, setS, DMSMSigSetCenter(), "setCenter:forItem:") || !DMSMSigOK(m, contS, DMSMSigRect(), "containerBounds")) return nil;
+    CGRect cb = ((CGRect (*)(id, SEL))DMSM_MSG_STRET)(m, contS);
+    if (!DMSMRectSane(cb)) return nil;
+    id items = ((id (*)(id, SEL))objc_msgSend)(m, itemsS);
+    NSArray *list = [items isKindOfClass:[NSArray class]] ? items : [items isKindOfClass:[NSOrderedSet class]] ? [(NSOrderedSet *)items array]
+                  : [items isKindOfClass:[NSSet class]] ? [(NSSet *)items allObjects] : nil;
+    NSMutableArray<NSArray *> *held = nil;
+    for (id it in list) {
+        CGSize s = ((CGSize (*)(id, SEL, id))objc_msgSend)(m, sizeS, it);
+        CGPoint c = ((CGPoint (*)(id, SEL, id))objc_msgSend)(m, centerS, it), k = c;
+        if (!isfinite(c.x) || !isfinite(c.y) || c.y - s.height / 2.0 < CGRectGetMinY(area) - 0.5 || !DMSMPastEdgeHeldAt(c, s, cb.size, &k)) continue;
+        if (!held) held = [NSMutableArray array];
+        [held addObject:@[it, [NSValue valueWithCGPoint:k]]];
+    }
+    return held;
+}
+static void DMSMPastEdgeAfter16(id m, NSArray<NSArray *> *held) {
+    if (!held.count) return;
+    SEL centerS = NSSelectorFromString(@"centerForItem:"), setS = NSSelectorFromString(@"setCenter:forItem:");
+    for (NSArray *e in held) {
+        CGPoint want = [e[1] CGPointValue], now = ((CGPoint (*)(id, SEL, id))objc_msgSend)(m, centerS, e[0]);
+        if (fabs(now.x - want.x) < 0.5 && fabs(now.y - want.y) < 0.5) continue;
+        BOOL lone = gSMLoneCenterNext; gSMLoneCenterNext = NO;   // (our move is not the lone window's re-centring, which our setCenter: hook keeps out)
+        ((void (*)(id, SEL, CGPoint, id))objc_msgSend)(m, setS, want, e[0]);
+        gSMLoneCenterNext = lone;
+        DM_FEATURE_MARK("sm-past-edge-kept16");
+        static int logged = 0;
+        if (logged < 30) { logged++; DMLog([NSString stringWithFormat:@"[smpast] %@ let go past the screen's edge: kept at %@ (Stage Manager's step had %@)", DMSMItemBundle(e[0]) ?: @"a window", NSStringFromCGPoint(want), NSStringFromCGPoint(now)]); }
+    }
+}
+static void DMSMConstrainV16(id self, SEL _cmd, id m, CGRect area) { NSArray *held = DMSMPastEdgeBefore16(m, area); o_SMConstrainV(self, _cmd, m, area); DMSMConstrainEdges16(m, area, 1); DMSMPastEdgeAfter16(m, held); }
+static void DMSMConstrainH16(id self, SEL _cmd, id m, CGRect area) { NSArray *held = DMSMPastEdgeBefore16(m, area); o_SMConstrainH(self, _cmd, m, area); DMSMConstrainEdges16(m, area, 0); DMSMPastEdgeAfter16(m, held); }
 static void DMSMHookConstrain16(void) {
     static BOOL done = NO;
     if (done) return;
@@ -48552,6 +49000,7 @@ static __thread int gSM17Depth = 0;   // (_performAutoLayout... runs itself agai
     CGRect container = CGRectZero;
     BOOL haveContainer = DMSMCfgBounds(cfg, &container);
     DMSM17Pass pass = DMSM17PassBegin(space, haveContainer, container);
+    pass.kept = DMSMPastEdgeHeldAt;   // (1.8.8.3: a window the user let go partly past the screen's edge, at that place, keeps it: SMPastEdge.h)
     BOOL lone = pass.loneHidden;
     gSM17Depth++;
     CGRect area = %orig;
@@ -48559,6 +49008,11 @@ static __thread int gSM17Depth = 0;   // (_performAutoLayout... runs itself agai
     // every window back at its place inside our stage area (what Apple's pass returns: the area of -stageAreaForSpace:, ours), not the padded
     // container; the lone window's flag back as it was
     int moved = DMSM17PassEnd(&pass, area);
+    if (pass.keptPast > 0) {
+        DM_FEATURE_MARK("sm-past-edge-kept17");
+        static int logged = 0;
+        if (logged < 30) { logged++; DMLog([NSString stringWithFormat:@"[smpast] %d window(s) let go past the screen's edge kept at their place (stage area %@)", pass.keptPast, NSStringFromCGRect(area)]); }
+    }
     if (lone) DMSM17Note(5);
     if (moved > 0) DMSM17Note(6);
     if (DMTestFlag("/tmp/macstatusbar-debug") && moved > 0 && gSM17Count[6] <= 10) DMLog([NSString stringWithFormat:@"[sm17] %d window(s) kept at their place inside the stage area %@", moved, NSStringFromCGRect(area)]);

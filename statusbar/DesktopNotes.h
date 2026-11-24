@@ -963,6 +963,10 @@ __attribute__((noinline)) static void DMStickyTurnTo(id rfc, long page) { if (rf
     if (!_notes) return;
     if (gDesktopNotesOn && gNotesRead && gNotesStatus == MSBDStickyUnread && !gNotesReading && CACurrentMediaTime() - gNotesTriedAt > 5.0) DMStickyLoad(nil);
     [self dm_notePagesTick];   // (1.8.8.2 F36: the layers of the other pages' notes)
+    // (1.8.8.3: iPadOS's App Switcher up -- its transition event seen and a switcher showing --: the typing ends, a note's, its name's or a desktop
+    //  name's, whichever way the switcher came; its event ends it as it comes, Desktop.h DMDesktopTypingSwitcherEvent. The typing window, kept just
+    //  above the switcher's window, lay over the App Switcher's cards: never raised over them here)
+    if (gEnvMode == 2 && [self dm_typingNow] && DMSwitcherVisible()) { [self dm_typingEnd:@"the App Switcher is up"]; return; }
     if (!_notes.editor) return;
     NSString *why = nil;
     if (_editing) why = @"jiggle mode or Guided Access";

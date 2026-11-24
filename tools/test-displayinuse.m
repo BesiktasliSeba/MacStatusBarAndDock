@@ -213,6 +213,22 @@ int main(void) {
         Expect(gFocusAsked.count == 1 && [gFocusAsked.firstObject isEqual:@"scene:com.apple.calculator"], [NSString stringWithFormat:@"T4: the keys Tips took with that transition asked back for Calculator, once (%@)", [gFocusAsked componentsJoinedByString:@","]]);
         DMBarFrontInUseUser(@"ipad", @"a click in a window there"); RunLoop(0.1);
         ExpectActive(CALC, @"T4: a tap on the iPad's window or Dock icon: the iPad's app (as before)");
+        // ---- T4 late (1.8.8.3, iPadOS 18.5): the same, but the zoom back's transition hands Tips the keys at its END, 0.7 s after the click -- after
+        // the ask-back's first read (0.5 s) found them still with Calculator; the reads stopped there and the keys stayed with Tips ----
+        Reset();
+        ipad = St(@"ipad", @{SET: W(5)}); tv = St(@"tv", @{TIPS: W(6)});
+        gRecent = [@[tv, ipad] mutableCopy]; gIPadShown = ipad; gTVShown = tv;
+        Tick(0.25);
+        ipad.items[CALC] = W(9); SBFirst(ipad, YES); gFrontApp = gKeysTo = @"com.apple.calculator";
+        Tick(0.25);
+        DMBarFrontInUseBarAction(TIPS);   // (the TV bar's green)
+        { TStage *tv2 = St(@"tv", @{TIPS: W(10)}); [gRecent removeObject:tv]; [gRecent insertObject:tv2 atIndex:0]; gTVShown = tv2; tv = tv2; }   // (its transition: the TV's stage first)
+        gNow += 0.08; Tick(0.0);   // (read at once: a held reading)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ gFrontApp = gKeysTo = @"com.apple.tips"; });   // (the transition's end)
+        RunLoop(2.0);
+        ExpectActive(CALC, @"T4 late: the TV bar's green, the keys handed to Tips at the transition's end: Calculator still active");
+        Expect([gKeysTo isEqualToString:@"com.apple.calculator"] && gFocusAsked.count >= 1 && [gFocusAsked.firstObject isEqual:@"scene:com.apple.calculator"],
+               [NSString stringWithFormat:@"T4 late: ... the keys Tips took 0.7 s later asked back for Calculator (keys with %@; asked %@)", gKeysTo, [gFocusAsked componentsJoinedByString:@","]]);
 
         // ---- T6: Settings active on the iPad, Tips a window on the TV; the TV bar's App menu > Minimize ----
         Reset();

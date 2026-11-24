@@ -13,7 +13,8 @@
 //  8. (ios17-sm2) the layout-role check against SpringBoard's exported SBLayoutRoleIsValid / role constants (stand-ins exported by this test);
 //  9. (ios17-sm2) one layout pass: DMSM17PassBegin / DMSM17PassEnd around a stand-in of 17.6.1's own -_performAutoLayoutWithSpace:... (written
 //     from the decompile: container clamp with the screen edge padding, (0,0) windows centred, a lone system-managed window centred, a
-//     full-screen-sized one centred), checking where every window ends up.
+//     full-screen-sized one centred), checking where every window ends up; (1.8.8.3) with windows let go past the screen's edges, kept by the
+//     real rule (statusbar/SMPastEdge.h) as the other engines keep theirs.
 // Compiled with BOOL = bool, as on arm64 iOS. Run: tools/test-smlayout17.sh
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
@@ -52,6 +53,7 @@ typedef struct { CGSize normalizedSize; CGRect referenceBounds; long long type; 
 #include "../common/StageManagerAvailable.h"
 static NSSet *DMSMCardsHeld(void) { return nil; }   // (SMCards.h's: no gesture modifier holds a stage here)
 #include "../statusbar/SMEngineAPI.h"
+#include "../statusbar/SMPastEdge.h"   // (1.8.8.3: the rule a window let go past the screen's edge is kept by, StatusBar.x's callback for the pass)
 static int gDiagSoon = 0;
 static void DMSM17DiagSoon(void) { gDiagSoon++; }
 
@@ -152,6 +154,31 @@ static CGRect ApplePass176(SBContinuousExposeAutoLayoutSpace *space, CGRect cont
         if (it.size.width == container.size.width && it.size.height == container.size.height) { it.position = CGPointMake(container.size.width * 0.5, container.size.height * 0.5); return stageArea; }
     }
     return stageArea;   // (snap + dodge: hooked to do nothing by our engine)
+}
+// (1.8.8.3) the hook's callback for a window let go past the screen's edge: these places, in a container of 1194 x 834, are recorded; it counts its asks
+// and hands back the place it keeps: the recorded one moved by gKeptMove (StatusBar.x DMSMPastEdgeHeldAt: by the rule against the desktop as it is now,
+// e.g. up above a Dock that grew since)
+static int gKeptN = 0, gKeptAsked = 0; static CGPoint gKeptAt[4], gKeptMove; static CGSize gKeptSize[4], gKeptCont;
+static BOOL TKept(CGPoint c, CGSize s, CGSize cont, CGPoint *keep) {
+    gKeptAsked++; gKeptCont = cont;
+    if (fabs(cont.width - 1194) > 0.5 || fabs(cont.height - 834) > 0.5) return NO;
+    for (int i = 0; i < gKeptN; i++) if (fabs(c.x - gKeptAt[i].x) < 1 && fabs(c.y - gKeptAt[i].y) < 1 && fabs(s.width - gKeptSize[i].width) < 1 && fabs(s.height - gKeptSize[i].height) < 1) {
+        if (keep) *keep = CGPointMake(c.x + gKeptMove.x, c.y + gKeptMove.y);
+        return YES;
+    }
+    return NO;
+}
+// (1.8.8.3, the parity with Aerial, Zetsu and MilkyWay4) the callback with the real rule, as StatusBar.x's DMSMPastEdgeHeldAt answers: a recorded place
+// (gKeptAt / gKeptSize on 1194 x 834), or the window a resize by hand of one is changing (its sides not dragged where they were at gRuleFrom), kept where
+// SMPastEdge.h keeps it in the desktop gRuleDesk -- its top under the menu bar, nothing else
+static CGRect gRuleDesk, gRuleFrom; static unsigned gRuleDragged;
+static BOOL TKeptRule(CGPoint c, CGSize s, CGSize cont, CGPoint *keep) {
+    gKeptAsked++;
+    BOOL at = NO;
+    for (int i = 0; i < gKeptN; i++) if (DMSMPastEdgeSame(c, s, cont, gKeptAt[i], gKeptSize[i], CGSizeMake(1194, 834))) at = YES;
+    if (!at && !(gRuleDragged && fabs(cont.width - 1194) < 0.5 && fabs(cont.height - 834) < 0.5 && DMSMPastEdgeResized(c, s, gRuleFrom, gRuleDragged))) return NO;
+    if (keep) *keep = DMSMPastEdgeCardCenter(c, s, gRuleDesk, 24.0);
+    return YES;
 }
 static SBContinuousExposeAutoLayoutItem *Item(CGFloat x, CGFloat y, CGFloat w, CGFloat h, BOOL def) {
     SBContinuousExposeAutoLayoutItem *it = [SBContinuousExposeAutoLayoutItem new]; it.position = CGPointMake(x, y); it.size = CGSizeMake(w, h); it.inDefaultPosition = def; return it;
@@ -374,6 +401,87 @@ int main(void) {
             DMSM17Pass p8 = DMSM17PassBegin(s8, YES, cont);
             int mv = DMSM17PassEnd(&p8, CGRectMake(0, 0, NAN, 10));
             Check(@"pass: a nonsense area moves nothing, the flag still comes back", mv == -1 && Def(s8, 0), [NSString stringWithFormat:@"%d", mv]);
+        }
+        // 9b. (1.8.8.3) a window the user let go partly past the screen's edge: the hook hands the pass a callback (StatusBar.x DMSMPastEdgeHeld) that
+        //     answers for the places recorded at the drop; such a window goes back to its own place, not into the stage area; any other as before
+        {
+            SBContinuousExposeAutoLayoutSpace *s10 = [SBContinuousExposeAutoLayoutSpace new];
+            s10.items = @[Item(-100, 400, 500, 400, NO), Item(1300, 600, 400, 300, NO), Item(600, 700, 400, 300, NO), Item(-150, 300, 400, 300, NO)];
+            gKeptN = 2; gKeptAt[0] = CGPointMake(-100, 400); gKeptAt[1] = CGPointMake(1300, 600); gKeptSize[0] = CGSizeMake(500, 400); gKeptSize[1] = CGSizeMake(400, 300);
+            gKeptAsked = 0; gKeptCont = CGSizeZero;
+            DMSM17Pass ps = DMSM17PassBegin(s10, YES, cont);
+            Check(@"past edge: the pass begins with no callback and the container's size", ps.kept == NULL && ps.keptPast == 0 && ps.container.width == 1194 && ps.container.height == 834, @"");
+            ps.kept = TKept;
+            CGRect a = ApplePass176(s10, cont, pad, ours);
+            CGPoint applesOwn = Pos(s10, 0);
+            int mv = DMSM17PassEnd(&ps, a);
+            Check(@"past edge: Apple's pass pulled the window past the left edge in", fabs(applesOwn.x - 298) < 0.5, P(applesOwn));
+            Check(@"past edge: ours puts a recorded window past the left edge back at its own place (400 of its 500 pt off the screen)", fabs(Pos(s10, 0).x + 100) < 0.5 && fabs(Pos(s10, 0).y - 400) < 0.5, P(Pos(s10, 0)));
+            Check(@"past edge: ... and one past the right edge", fabs(Pos(s10, 1).x - 1300) < 0.5 && fabs(Pos(s10, 1).y - 600) < 0.5, P(Pos(s10, 1)));
+            Check(@"past edge: a window not recorded is kept inside the stage area as before (its bottom on the area's)", fabs(Pos(s10, 2).x - 600) < 0.5 && fabs(Pos(s10, 2).y - (CGRectGetMaxY(ours) - 150)) < 0.5, P(Pos(s10, 2)));
+            Check(@"past edge: ... and one past the left edge that is not recorded comes back inside (its left at the screen's edge)", fabs(Pos(s10, 3).x - 200) < 0.5 && fabs(Pos(s10, 3).y - 300) < 0.5, P(Pos(s10, 3)));
+            Check(@"past edge: the callback asked with each window's place and size and the container's size; two kept, four moved", gKeptAsked == 4 && gKeptCont.width == 1194 && gKeptCont.height == 834 && ps.keptPast == 2 && mv == 4, [NSString stringWithFormat:@"asked %d kept %d moved %d", gKeptAsked, ps.keptPast, mv]);
+        }
+        {   // its top above the stage area (under the menu bar): never kept there, clamped as any other; a full-screen window is not asked
+            SBContinuousExposeAutoLayoutSpace *s11 = [SBContinuousExposeAutoLayoutSpace new]; s11.items = @[Item(-100, 230, 500, 400, NO), Item(597, 417, 1194, 834, NO)];
+            gKeptN = 1; gKeptAt[0] = CGPointMake(-100, 230); gKeptSize[0] = CGSizeMake(500, 400); gKeptAsked = 0;
+            DMSM17Pass ps = DMSM17PassBegin(s11, YES, cont);
+            ps.kept = TKept;
+            CGRect a = ApplePass176(s11, cont, pad, ours);
+            DMSM17PassEnd(&ps, a);
+            Check(@"past edge: a recorded window whose top is above the stage area is kept inside as before (top under the bar, left at the edge)", fabs(Pos(s11, 0).x - 250) < 0.5 && fabs(Pos(s11, 0).y - 248) < 0.5 && ps.keptPast == 0, P(Pos(s11, 0)));
+            Check(@"past edge: the full-screen window is not asked and stays centred", gKeptAsked == 0 && fabs(Pos(s11, 1).x - 597) < 0.5 && fabs(Pos(s11, 1).y - 417) < 0.5, [NSString stringWithFormat:@"asked %d %@", gKeptAsked, P(Pos(s11, 1))]);
+        }
+        {   // no container known: the callback is never asked (nothing to compare the record's screen with)
+            SBContinuousExposeAutoLayoutSpace *s12 = [SBContinuousExposeAutoLayoutSpace new]; s12.items = @[Item(-100, 400, 500, 400, NO)];
+            gKeptN = 1; gKeptAt[0] = CGPointMake(-100, 400); gKeptSize[0] = CGSizeMake(500, 400); gKeptAsked = 0;
+            DMSM17Pass ps = DMSM17PassBegin(s12, NO, CGRectZero);
+            ps.kept = TKept;
+            DMSM17PassEnd(&ps, ours);
+            Check(@"past edge: no container -> nothing remembered, the callback not asked", gKeptAsked == 0 && ps.keptPast == 0, @"");
+        }
+        {   // the callback keeps it elsewhere (a Dock grown since the drop: its title bar moved up above it): the window goes where the callback says
+            SBContinuousExposeAutoLayoutSpace *s13 = [SBContinuousExposeAutoLayoutSpace new]; s13.items = @[Item(500, 900, 500, 400, NO)];
+            gKeptN = 1; gKeptAt[0] = CGPointMake(500, 900); gKeptSize[0] = CGSizeMake(500, 400); gKeptAsked = 0; gKeptMove = CGPointMake(0, -40);
+            DMSM17Pass ps = DMSM17PassBegin(s13, YES, cont);
+            ps.kept = TKept;
+            CGRect a = ApplePass176(s13, cont, pad, ours);
+            DMSM17PassEnd(&ps, a);
+            Check(@"past edge: kept where the callback keeps it (40 pt up, still past the bottom), not at the old place nor clamped", fabs(Pos(s13, 0).x - 500) < 0.5 && fabs(Pos(s13, 0).y - 860) < 0.5 && ps.keptPast == 1, P(Pos(s13, 0)));
+            gKeptMove = CGPointZero;
+        }
+        {   // (1.8.8.3, as Aerial, Zetsu and MilkyWay4) the real rule: a window let go past the bottom, its title bar behind the Dock, stays there when the
+            // Dock has grown since (nothing lifts it above the Dock); one let go under the menu bar and past the left edge goes down only as far as a
+            // taller menu bar needs
+            SBContinuousExposeAutoLayoutSpace *s14 = [SBContinuousExposeAutoLayoutSpace new];
+            s14.items = @[Item(500, 950, 500, 400, NO), Item(-100, 248, 500, 400, NO), Item(600, 500, 400, 300, NO)];
+            gKeptN = 2; gKeptAt[0] = CGPointMake(500, 950); gKeptSize[0] = CGSizeMake(500, 400); gKeptAt[1] = CGPointMake(-100, 248); gKeptSize[1] = CGSizeMake(500, 400);
+            gKeptAsked = 0; gRuleDragged = 0;
+            gRuleDesk = CGRectMake(0, 40, 1194, 834 - 160 - 2 - 40);   // (a taller menu bar, 40 pt, and a bigger Dock, its line at 672)
+            DMSM17Pass ps = DMSM17PassBegin(s14, YES, cont);
+            ps.kept = TKeptRule;
+            CGRect a = ApplePass176(s14, cont, pad, ours);
+            DMSM17PassEnd(&ps, a);
+            Check(@"parity: past the bottom with its bar behind a Dock grown since: kept where it was let go, as on the other engines", fabs(Pos(s14, 0).x - 500) < 0.5 && fabs(Pos(s14, 0).y - 950) < 0.5, P(Pos(s14, 0)));
+            Check(@"parity: under a taller menu bar and past the left edge: down 16 pt, still past the edge", fabs(Pos(s14, 1).x + 100) < 0.5 && fabs(Pos(s14, 1).y - 264) < 0.5, P(Pos(s14, 1)));
+            Check(@"parity: a window not recorded inside as before; two kept", fabs(Pos(s14, 2).x - 600) < 0.5 && fabs(Pos(s14, 2).y - 500) < 0.5 && ps.keptPast == 2, [NSString stringWithFormat:@"%@ kept %d", P(Pos(s14, 2)), ps.keptPast]);
+        }
+        {   // (1.8.8.3, as Aerial, Zetsu and MilkyWay4) a resize by hand of a window past the left edge (its bottom-right corner): at its new size it stays
+            // where it is, its left and top sides where they were; another window whose left side is elsewhere is not it (clamped as before)
+            SBContinuousExposeAutoLayoutSpace *s15 = [SBContinuousExposeAutoLayoutSpace new];
+            s15.items = @[Item(-50, 425, 600, 450, NO), Item(0, 425, 600, 450, NO)];
+            gKeptN = 1; gKeptAt[0] = CGPointMake(-100, 400); gKeptSize[0] = CGSizeMake(500, 400);
+            gRuleFrom = CGRectMake(-350, 200, 500, 400); gRuleDragged = kDMSMPastEdgeRight | kDMSMPastEdgeBottom; gKeptAsked = 0;
+            gRuleDesk = CGRectMake(0, 24, 1194, 834 - 117 - 2 - 24);
+            DMSM17Pass ps = DMSM17PassBegin(s15, YES, cont);
+            ps.kept = TKeptRule;
+            CGRect a = ApplePass176(s15, cont, pad, ours);
+            CGPoint applesOwn = Pos(s15, 0);
+            DMSM17PassEnd(&ps, a);
+            Check(@"parity: resized by its corner, 350 pt still past the left edge: Apple's pass pulled it in", fabs(applesOwn.x - 348) < 0.5, P(applesOwn));
+            Check(@"parity: ... ours keeps it where it is at its new size (as the other engines' resizes)", fabs(Pos(s15, 0).x + 50) < 0.5 && fabs(Pos(s15, 0).y - 425) < 0.5 && ps.keptPast == 1, P(Pos(s15, 0)));
+            Check(@"parity: a window whose left side is elsewhere is not the one resized: inside the stage area as before", fabs(Pos(s15, 1).x - 300) < 0.5, P(Pos(s15, 1)));
+            gRuleDragged = 0;
         }
         // 10. the size grid (gridWidths / gridHeights): every whole point up to the screen; 17+ heights from 300 (17.6.1's list starts at 480)
         NSArray *appleH = @[@480, @530, @600, @700, @786], *appleW = @[@320, @414, @600, @1146], *trollH = @[@150, @170, @190, @786];

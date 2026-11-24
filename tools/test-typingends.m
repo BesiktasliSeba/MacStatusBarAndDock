@@ -32,6 +32,10 @@ static NSMutableArray<NSString *> *gOrder;   // ("begin": SpringBoard's own; "en
 static void DMDesktopTypingEnd(NSString *why) { [gOrder addObject:[@"end " stringByAppendingString:why ?: @"(none)"]]; }
 static BOOL gTyping;
 static BOOL DMDesktopTypingNow(void) { return gTyping; }
+// (1.8.8.3: the Mac Switcher's state, as DMDesktopTypingSwitcherEvent reads it: on, its view open, iPadOS's switcher asked for from the Apple menu)
+static BOOL gMSWOn, gMSWViewOpen, gMSWStock;
+static BOOL DMMSWIsOpen(void) { return gMSWViewOpen; }
+static BOOL DMMSWStockOnce(void) { return gMSWStock; }
 #define DMLog(...) do { (void)(__VA_ARGS__); } while (0)
 #define DM_FEATURE_MARK(n) do { } while (0)
 static int gHooks;
@@ -243,6 +247,23 @@ int main(void) {
         [co beginTransitionForWorkspaceTransaction:OverlayTx(present, spotVC, iPad)];
         [co beginTransitionForWorkspaceTransaction:AppTx(app, 3, Stage(@[@YES]), iPad)];
         check([[gOrder componentsJoinedByString:@","] isEqualToString:@"begin,begin"], @"pass-through: nothing types: SpringBoard's begin only, nothing read or ended");
+        // ---- 1.8.8.3: iPadOS's App Switcher on its way ends the typing (Desktop.h DMDesktopTypingSwitcherEvent, from the switcher's transition event) ----
+        NSString *(^event)(long long, BOOL, BOOL, BOOL, BOOL, BOOL *) = ^NSString *(long long mode, BOOL typing, BOOL on, BOOL open, BOOL stock, BOOL *atOnce) {
+            gTyping = typing; gMSWOn = on; gMSWViewOpen = open; gMSWStock = stock; [gOrder removeAllObjects];
+            DMDesktopTypingSwitcherEvent(mode);
+            if (atOnce) *atOnce = gOrder.count > 0;
+            [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+            return [gOrder componentsJoinedByString:@","];
+        };
+        BOOL atOnce = YES;
+        check([event(2, YES, NO, NO, NO, &atOnce) isEqualToString:@"end the App Switcher opens"] && !atOnce,
+              @"App Switcher: its transition event (mode 2) ends the typing, a note's or a name's, on the main queue's next turn (never inside SpringBoard's transition)");
+        check([event(1, YES, NO, NO, NO, NULL) isEqualToString:@""] && [event(3, YES, NO, NO, NO, NULL) isEqualToString:@""] && [event(0, YES, NO, NO, NO, NULL) isEqualToString:@""],
+              @"App Switcher: Home (1), an app or the windows (3), none (0): the typing goes on");
+        check([event(2, NO, NO, NO, NO, NULL) isEqualToString:@""], @"App Switcher: nothing typed: nothing ended");
+        check([event(2, YES, YES, YES, YES, NULL) isEqualToString:@""], @"App Switcher: the Mac Switcher shows (its open ended the typing): nothing more");
+        check([event(2, YES, YES, NO, NO, NULL) isEqualToString:@""], @"App Switcher: the Mac Switcher on and iPadOS's not asked for (the Mac Switcher's gesture: its open ends it)");
+        check([event(2, YES, YES, NO, YES, NULL) isEqualToString:@"end the App Switcher opens"], @"App Switcher: the Mac Switcher on, iPadOS's asked for from the Apple menu (Show App Switcher): ends");
 #else
         // ---- the watch refuses a begin it does not know ----
         DMDesktopTypingWatch();

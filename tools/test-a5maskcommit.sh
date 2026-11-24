@@ -87,9 +87,11 @@ sites() {   # $1 StatusBar.x, $2 quiet: the number of site checks that fail
   # layout, and every reload of its list or icons shows the selection again; 1.8.8.2's B72 changed NativeWindow.h's resize maths only
   # (DMNativeResized's inside argument: a sticky note's moving side stops at its area's side; a window passes NO and keeps its maths), no
   # focus, key window or level change either; 1.8.8.2's tvbar made DMNativeTouchBegan return first while a menu or dialog of ours is open on the
-  # touched screen: it only takes away one making-active (a Finder window under a menu row), never adds a focus, key window or level change)
-  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = 4603e1f5478a8e90 ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = 75f2a400732e9efb ] \
-     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8, 1.8.8.1 or 1.8.8.2 (no focus, key window or level change; NativeWindow.h: 1.8.8.2 with one comment reworded)"
+  # touched screen: it only takes away one making-active (a Finder window under a menu row), never adds a focus, key window or level change;
+  # 1.8.8.3 made DMNativeTouchBegan return for a key of our own on-screen keyboard before its hit test: again it only takes away a making-active
+  # (the Finder window under the key), never adds a focus, key window or level change)
+  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = dcfde8e7c812e94e ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = 75f2a400732e9efb ] \
+     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8, 1.8.8.1, 1.8.8.2 or 1.8.8.3 (no focus, key window or level change; NativeWindow.h: 1.8.8.3's key return)"
   else no "NativeWindow.h, Finder.h or KeyboardBehind.h changed"; fi
   # the trace and the kill switch are debug only
   [ "$(ifdebug "$X" 'return DMTestFlag("/tmp/msb-a5-maskold");')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskDebugAtCommit(void) {')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskTrace(UIView *stage, CGSize was, CGSize now) {')" = yes ] \

@@ -136,6 +136,9 @@ static BOOL DMMSWGesturesOn(void) { return gGesturesOn; }
 static long long DMMSWGestureTypeOf(id gesture) { return gesture ? 1 : 0; }
 static BOOL DMMSWAsyncPicturesOK(void) { return gAsyncPicturesOK; }
 
+// iPadOS's App Switcher asked for from the Apple menu while the Mac Switcher is on (MacSwitcher.h DMMSWStockOnce)
+static BOOL gStockOnce;
+static BOOL DMMSWStockOnce(void) { return gStockOnce; }
 // ---- the code under test ----
 #include "close.inc"
 #include "stack.inc"
@@ -143,6 +146,9 @@ static BOOL DMMSWAsyncPicturesOK(void) { return gAsyncPicturesOK; }
 #include "shown.inc"
 #include "open.inc"
 #include "start.inc"
+#if HAVE_ENV
+#include "env.inc"   // (1.8.8.3: StatusBar.x DMSwitcherEnvCloseMenus, iPadOS's App Switcher on its way: its transition event)
+#endif
 static void DMTickClose(BOOL ccActive) {
     BOOL (^DMSwitcherVisible)(void) = ^{ return TW.switcher; };   // (the tick's own reading)
     BOOL (^DMCoverSheetShown)(void) = ^{ return TW.cover; };
@@ -509,6 +515,40 @@ int main(void) {
         check(tswitch > 0 && tswitchOk == tswitch, [NSString stringWithFormat:@"the tick, a menu open and iPadOS's App Switcher up: the menu closes as in 1.8.8.1 (the same calls and line) and the stack's panel with it, in %d of %d states", tswitchOk, tswitch]);
         check(tsame == tstates - tswitch, [NSString stringWithFormat:@"the tick, every other state (Control Center, the Lock Screen, Spotlight, Notification Center, nothing, the debug keep): the same calls as 1.8.8.1, the panel left to its own watch, in %d of %d states", tsame, tstates - tswitch]);
         if (tbad) printf("      first state that differs: %s\n", tbad.UTF8String);
+
+        // ---- iPadOS's App Switcher on its way (1.8.8.3): its transition event (environment mode 2) closes every menu of ours at once, before it
+        // shows -- also one iPadOS dismisses again 0.2 s later, before any tick has seen it up (a sticky note's menu, Show App Switcher, 18.5) ----
+#if HAVE_ENV
+        {
+            struct { BOOL on, stock, open, menu, panel, keep; long long mode; BOOL want; const char *what; } cs[] = {
+                { NO,  NO,  NO,  YES, NO,  NO,  2, YES, "the Mac Switcher off, a menu open, a transition to the App Switcher that is gone again before a tick: the menu closes" },
+                { NO,  NO,  NO,  YES, YES, NO,  2, YES, "  ... with the Downloads stack's panel open too: both close" },
+                { NO,  NO,  NO,  NO,  YES, NO,  2, YES, "  ... the stack's panel alone: it closes" },
+                { YES, YES, NO,  YES, NO,  NO,  2, YES, "the Mac Switcher on, iPadOS's App Switcher asked for from the Apple menu (Show App Switcher): the menu closes" },
+                { YES, NO,  NO,  YES, NO,  NO,  2, NO,  "the Mac Switcher on and nothing asked: left to the Mac Switcher's own open (its own line, before its view)" },
+                { NO,  NO,  YES, YES, NO,  NO,  2, NO,  "the Mac Switcher's view open: nothing here" },
+                { NO,  NO,  NO,  YES, NO,  NO,  1, NO,  "a transition Home: nothing" },
+                { NO,  NO,  NO,  YES, NO,  NO,  3, NO,  "a transition to an app: nothing" },
+                { NO,  NO,  NO,  NO,  NO,  NO,  2, NO,  "nothing open: nothing done, no line" },
+                { NO,  NO,  NO,  YES, NO,  YES, 2, NO,  "the debug keep: kept" },
+            };
+            for (size_t i = 0; i < sizeof cs / sizeof cs[0]; i++) {
+                World w = Ready(); w.on = cs[i].on; w.open = cs[i].open; w.menu = cs[i].menu; w.panel = cs[i].panel; w.keep = cs[i].keep;
+                SetUp(w); W.switcherUp = NO; gStockOnce = cs[i].stock;   // (the App Switcher gone again before anything reads it)
+                DMSwitcherEnvCloseMenus(cs[i].mode);
+                BOOL inside = T.count > 0;   // (nothing inside SpringBoard's own call: the main queue's next turn)
+                [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+                BOOL menuGone = gOverlay == nil, panelGone = !Panel().opened;
+                BOOL line = [T containsObject:@"log [overlay] the App Switcher came up while a menu or question was open: closed"], dline = [T containsObject:@"log [downloads] closes: the App Switcher came up"];
+                BOOL ok = !inside && (cs[i].want ? menuGone && panelGone && line == cs[i].menu && dline == cs[i].panel && [T containsObject:@"mark app-switcher-closes-menus"]
+                                                 : menuGone == !cs[i].menu && panelGone == !cs[i].panel && !line && !dline && ![T containsObject:@"mark app-switcher-closes-menus"]);
+                check(ok, [NSString stringWithFormat:@"App Switcher on its way: %s (%@)", cs[i].what, [T componentsJoinedByString:@" | "]]);
+            }
+            gStockOnce = NO; gMSWOn = NO; gMSWOpen = NO; gOverlay = nil; Panel().opened = NO;
+        }
+#else
+        check(NO, @"App Switcher on its way: no close at its transition event (DMSwitcherEnvCloseMenus is not in this tree): a menu stays when iPadOS's App Switcher is gone again before a tick");
+#endif
 
         printf("%d checks, %d failed\n", checks, fails);
     }

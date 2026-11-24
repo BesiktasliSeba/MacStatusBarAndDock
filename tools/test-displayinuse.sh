@@ -41,6 +41,23 @@ int main(void) {
     MSBDInUseState t = {0}; MSBDInUseFirst(&t, 5, 0, 1, 20.0);
     expect(MSBDInUseHeld(&t, 6, 1, 1, 21.3), 0, "  (without the hold: not a held reading ...");
     expect(MSBDInUseFirst(&t, 6, 1, 1, 21.3), 1, "  ... the TV would have taken it: 1.8.8.1.1's fault)");
+    // the keys a transition hands its display's front window at its end (1.8.8.3, the TV bar's green on 18.5: 0.7 s after the click)
+    s = (MSBDInUseState){0};
+    MSBDInUseFirst(&s, 5, 0, 1, 20.0);
+    MSBDInUseBarAction(&s, 1, 21.0);
+    expect(MSBDInUseKeepsKeys(&s, 1, 21.7), 1, "T4 late: the TV bar's green, its transition ending 0.7 s later on the TV: the keys stay with the iPad's app (held)");
+    expect(MSBDInUseKeepsKeys(&s, 0, 21.7), 0, "  ... a transition on the iPad, the display in use: Apple's way");
+    expect(MSBDInUseKeepsKeys(&s, 1, 23.5), 0, "  ... after the hold: Apple's way");
+    MSBDInUseFollow(&s);
+    expect(MSBDInUseKeepsKeys(&s, 1, 21.8), 0, "  ... an app's icon tapped (no hold: its launch is the user's): Apple's way");
+    s = (MSBDInUseState){0};
+    MSBDInUseFirst(&s, 5, 0, 1, 30.0);
+    MSBDInUseUser(&s, 0, 5, 30.1);
+    expect(MSBDInUseKeepsKeys(&s, 1, 30.4), 1, "  ... a TV transition landing 0.3 s after a touch on the iPad: the keys stay");
+    expect(MSBDInUseKeepsKeys(&s, 0, 30.4), 0, "  ... the iPad's own transition after its touch: Apple's way");
+    t = (MSBDInUseState){0};
+    expect(MSBDInUseKeepsKeys(&t, 1, 1.0), 0, "  ... nothing known yet: Apple's way");
+    expect(MSBDInUseKeepsKeys(NULL, 1, 1.0), 0, "  ... no state: Apple's way");
     // T6
     s = (MSBDInUseState){0};
     MSBDInUseFirst(&s, 5, 0, 1, 30.0);
@@ -152,6 +169,14 @@ site "a click: not on the menu bar, not in an App Switcher or the Mac Switcher" 
 site "a click: not on our title bar (its lights act without making the window active)" 'isKindOfClass:\[DMSMTitleBar class\]\]\) return;' "$W/press.txt"
 site "a click: in a window card only" 'if \(!DMSMCardKey\(DMSMCardOfView\(hit\)\).length\) return;' "$W/press.txt"
 site "a click: nothing with the iPad alone" '^        if \(DMBarFrontSkipped\(\) \|\| DMDispScreens\(\).count < 2\) return;' "$W/press.txt"
+K0=../statusbar/SMSpotKeyboard.h
+body "$K0" 'static void DMSMSpotFocusNew(id self, SEL _cmd, id from, id to, id windowScene) {' > "$W/spot.txt"
+site "a transition on a display not in use while the display in use is held hands its window no keys (the TV bar's green, 18.5; 1.8.8.3)" \
+  'BOOL held = !keep && !typing && DMSMEngine\(\) && DMBarFrontInUseKeepsKeys\(screen\);' "$W/spot.txt"
+awk '/if \(held\) \{ DM_FEATURE_MARK\("sm-inuse-keeps-keyboard"\); return; \}/ {u=NR} /o_SMSpotFocusNew\(self, _cmd, from, to, windowScene\);/ {r=NR} END {exit !(u && r && u < r)}' "$W/spot.txt" && echo "PASS  site: ... returns before Apple's hand-off" || { echo "FAIL  site: the held case does not return before Apple's hand-off"; fails=$((fails+1)); }
+body "$X0" '__attribute__((noinline)) static BOOL DMBarFrontInUseKeepsKeys(UIWindowScene *screen) {' > "$W/keeps.txt"
+site "... only with a hardware keyboard, our engine, the piece on and the other display up" 'if \(!screen \|\| DMBarFrontSkipped\(\) \|\| !DMSMEngine\(\) \|\| !gDMInUseOther \|\| !DMHardwareKeyboardAttached\(\) \|\| !DMBarFrontInUseScreen\(gDMInUseOther\)\) return NO;' "$W/keeps.txt"
+site "... the state's rule (MSBDInUseKeepsKeys), the transition's display by its window scene" 'return d >= 0 && MSBDInUseKeepsKeys\(&gDMInUse, d, CACurrentMediaTime\(\)\);' "$W/keeps.txt"
 body "$X0" 'static void DMBarFrontLightTap(NSInteger which, NSString *key) {' > "$W/light.txt"
 site "the other display's bar's lights hold the display in use, before they act" 'DMBarFrontInUseBarAction\(key\);' "$W/light.txt"
 body "$X0" 'static void DMBarFrontMinimize(NSString *key) {' > "$W/min.txt"
@@ -184,8 +209,8 @@ site "an open menu over a Finder window takes the touch before any window is mad
 awk '/overlayHost && overlayHost != gNativeLayer/ {u=NR} /UIView \*hit = DMNativeLayerHitTest/ {r=NR} END {exit !(u && r && u < r)}' "$W/native.txt" && echo "PASS  site: ... before the hit test" || { echo "FAIL  site: the open menu's check comes after the hit test"; fails=$((fails+1)); }
 grep -Fq 'LightTap|Minimize|InUse[A-Za-z]+)|MSBDBarFrontWay|MSBDBarLightsFor|MSBDInUse[A-Za-z]+|MSBDShownStageGone)' "$R0" && grep -q ' barPerDisplay$' "$R0" \
   && echo "PASS  site: the crash guard's rule names the display in use's functions (barPerDisplay)" || { echo "FAIL  site: the crash guard's rule"; fails=$((fails+1)); }
-for f in DMBarFrontInUseRead DMBarFrontInUseStage DMBarFrontInUseUser DMBarFrontInUseBarAction DMBarFrontInUsePress DMAutoHideTVSystemHover DMAutoHideTVPointerOnIPad; do
-  grep -q "^__attribute__((noinline)) static [a-z ]*\*\{0,1\}$f(" "$X0" && echo "PASS  site: $f is a function of its own (its own frame, the crash map's name)" || { echo "FAIL  site: $f inlined"; fails=$((fails+1)); }
+for f in DMBarFrontInUseRead DMBarFrontInUseStage DMBarFrontInUseUser DMBarFrontInUseBarAction DMBarFrontInUseKeepsKeys DMBarFrontInUsePress DMAutoHideTVSystemHover DMAutoHideTVPointerOnIPad; do
+  grep -q "^__attribute__((noinline)) static [A-Za-z ]*\*\{0,1\}$f(" "$X0" && echo "PASS  site: $f is a function of its own (its own frame, the crash map's name)" || { echo "FAIL  site: $f inlined"; fails=$((fails+1)); }
 done
 
 # ---- 4. made-to-fail copies ----
@@ -221,10 +246,11 @@ mtf "an action from the other display's bar not held" sbx 's/    MSBDInUseBarAct
 mtf "a new most recent stage taken while not shown (a minimized window's, one left by a closed stage)" sbx 's/    BOOL shown = first && DMBarFrontInUseShown\(first\);/    BOOL shown = first != nil;/'
 mtf "the TV in use: its most recent stage whatever it shows" sbx 's/if \(sc && DMBarFrontSwitcherOn\(sc, &env, &shown\)\) return env == 3 \? shown : nil;/(void)sc;/'
 mtf "the iPad in use: the iPad's most recent stage, shown or not" sbx 's/if \(\*way == kMSBDInUseWayIPad\) return DMSMIPadStageShown\(\);/if (*way == kMSBDInUseWayIPad) return DMSMFrontStageOnDisplay(nil);/'
-mtf "the keys never asked back" sbx 's/    DMBarFrontInUseKeysBack\(\[key copy\], 3\);\n//'
+mtf "the keys never asked back" sbx 's/    DMBarFrontInUseKeysBack\(\[key copy\], 5\);[^\n]*\n//'
 mtf "the keys left with the app of a transition the hold kept (review 1.8.8.2)" sbx 's/        if \(k.length\) DMBarFrontInUseKeysBack\(k, 3\);\n//'
 mtf "the keys left with the app that was active after a window made active with no touch in it (review 1.8.8.2)" sbx 's/    DMBarFrontInUseKeysBack\(nil, 20\);\n//'
-mtf "the keys asked back even when they stayed with the active app" sbx 's/ \|\| \[holder isEqualToString:ab\] \|\| !DMHardwareKeyboardAttached/ || !DMHardwareKeyboardAttached/'
+mtf "the keys asked back even when they stayed with the active app" sbx 's/        if \(\[holder isEqualToString:ab\]\) \{[^\n]*\n//'
+mtf "the keys' reads after an action from the other display's bar end at the first one with the active app (1.8.8.3, 18.5)" sbx 's/if \(\[holder isEqualToString:ab\]\) \{ if \(acted.length && left > 1\) DMBarFrontInUseKeysStep\(acted, left - 1, asks\); return; \}/if ([holder isEqualToString:ab]) return;/'
 mtf "the keys followed only when the display in use changed (the Window menu's pick)" sbx 's/    DMBarFrontInUseKeysBack\(nil, 20\);\n    if \(!changed\) return;/    if (!changed) return;\n    DMBarFrontInUseKeysBack(nil, 20);/'
 mtf "the keys asked once, not read again (a click)" sbx 's/        if \(asked && left > 1\) DMBarFrontInUseKeysStep\(acted, left - 1, asks - 1\);\n//'
 mtf "the keys asked without end" sbx 's/if \(asked && left > 1\) DMBarFrontInUseKeysStep\(acted, left - 1, asks - 1\);/if (asked \&\& left > 1) DMBarFrontInUseKeysStep(acted, left - 1, asks);/'

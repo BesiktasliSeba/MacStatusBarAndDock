@@ -125,6 +125,9 @@ static BOOL DMSMIsMainIdentity(id identity) { return !identity || [identity isEq
 static id DMSMWorkingStage(void) { return gStage; }
 static BOOL DMSMSizeRefitPending(double *placedTop) { (void)placedTop; return NO; }
 static id DMSMAttrsRefitTop(id attrs, NSString *who, BOOL old24, BOOL sized, double placedTop) { (void)attrs; (void)who; (void)old24; (void)sized; (void)placedTop; return nil; }
+// (1.8.8.3: a window the user let go past the screen's edge keeps that place -- test-smpastedge.sh runs the real ones; none is recorded here)
+static BOOL DMSMPastEdgeHeld(CGPoint c, CGSize s, CGSize scr) { (void)c; (void)s; (void)scr; return NO; }
+static BOOL DMSMPastEdgeKeepIn(CGPoint *cp, CGSize pts, CGSize scr, CGRect u) { (void)cp; (void)pts; (void)scr; (void)u; return NO; }
 static const CGSize kLand = {1366, 1024}, kPort = {1024, 1366};
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {
     (void)identity;

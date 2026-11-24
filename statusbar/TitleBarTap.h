@@ -169,6 +169,8 @@ static BOOL DMTitleTapOnBar(UIGestureRecognizer *g, UITouch *touch) {
 @implementation DMTitleTapTarget
 + (instancetype)shared { static DMTitleTapTarget *t; static dispatch_once_t once; dispatch_once(&once, ^{ t = [DMTitleTapTarget new]; }); return t; }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    // (Aerial 3.0: every touch on its window noted, where a drag it begins went down -- StatusBar.x DMAerial30NoteDown; 1.8.8.3 review)
+    if ([objc_getAssociatedObject(g, &kTitleTapKindKey) intValue] == kDMTitleAerial) DMAerial30NoteDown(g.view, touch);
     if (!DMTitleTapOnBar(g, touch)) return NO;   // (Aerial's stage: its title strip only)
     // (any touch on a window's title bar, its lights too -- Aerial 5.x's and 3.0's strip, Zetsu's top bar, MilkyWay4's bar, which no app hears of: a
     //  window Keep Covered Windows in Front kept above another is the active one now, as a tap in it makes it -- KeepCovered.h, review 1.8.4.1 M1)

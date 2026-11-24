@@ -106,6 +106,7 @@ The Mac look is on right after install, and most features have their own switch.
 - Swiping up from the bottom or pressing the Home button minimizes your windows so the Home Screen shows, and opening an app brings its window back. With a trackpad or mouse connected, going Home leaves your windows where they are, as on a Mac, unless you turn off Adapt to Trackpad & Mouse. Home Minimizes Windows in Settings > Windows & Multitasking turns it off.
 - The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side and keeps each one in its place when another closes or joins. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
 - A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them. Snap Windows to Edges in Settings > Windows & Multitasking turns it off.
+- Windows can be moved partly off the left, right and bottom edges of the screen to keep them out of the way, with every window engine and on an external display with Stage Manager.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - Windows have a smallest size with every engine, as with Stage Manager: the app at least 320 x 300 points.

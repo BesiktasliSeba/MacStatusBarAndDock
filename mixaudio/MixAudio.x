@@ -26,6 +26,7 @@
 #import <objc/message.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <pthread.h>
+#include "../common/MixAudioScale.h"   // (the level on an app's own output unit: the format the samples are in, the shape check, the scaling)
 #define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
 #if __has_feature(ptrauth_calls)
 #import <ptrauth.h>
@@ -602,23 +603,45 @@ static void MAObserve(void) {
 // ---- apps with their own audio pipeline (Spotify, games, AVAudioEngine) ----
 // Spotify (traced live) never uses a player class for its music: it builds its own graph ending in a RemoteIO unit (auou/rioc), the unit
 // that hands an app's samples to the system. Every RemoteIO / voice-processing unit the app creates gets a render notification; after each
-// render of the OUTPUT element (bus 0 -- bus 1 is the microphone and is never touched) the samples are multiplied in place. The client format
-// (float, 16- or 32-bit integer) is read once per unit outside the render thread's hot path and cached. Gain ramps across each buffer from the
-// last value used, so dragging the slider doesn't click. At multiplier 1.0 nothing is done at all.
+// render of the OUTPUT element (bus 0 -- bus 1 is the microphone and is never touched) the samples are multiplied in place, in the format
+// they are in there: the unit's OUTPUT scope (the system's side, 32-bit float), not the app's own format (its input scope: 16-bit integer for
+// many games, GitHub #18). The format is read once per unit outside the render thread's hot path and cached, read again when the app sets a
+// format, when the route changes (the system's side follows it) and when the buffers stop matching it; a format or a buffer list that is not
+// proven is left untouched (common/MixAudioScale.h). Gain ramps across each buffer from the last value used, so dragging the slider doesn't
+// click. At multiplier 1.0 nothing is done at all.
 #define MA_MAX_UNITS 16
-typedef struct { AudioUnit unit; AudioStreamBasicDescription fmt; BOOL known; float lastGain; BOOL voice; } MAUnitState;   // voice: a voice-processing unit (a call), never scaled
+typedef struct { AudioUnit unit; MSBDMixScaleState scale; BOOL voice; BOOL traced; } MAUnitState;   // voice: a voice-processing unit (a call), never scaled; traced: DEBUG's format line written
 static MAUnitState gMAUnits[MA_MAX_UNITS];
 static pthread_mutex_t gMAUnitsLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;   // (F17: our own lock -- recursive, like the @synchronized it replaces -- not one on a process-wide object other code may lock too)
 #if DEBUG
-static volatile uint64_t gMAScaledBuffers = 0;
+static volatile uint64_t gMAScaledBuffers = 0, gMAUntouchedBuffers = 0, gMAFormatReads = 0;
+static NSString *MAFormatText(const AudioStreamBasicDescription *f) {
+    if (!f->mFormatID) return @"(not read)";
+    return [NSString stringWithFormat:@"%.0f Hz %u ch %u-bit %@ %@%@", f->mSampleRate, (unsigned)f->mChannelsPerFrame, (unsigned)f->mBitsPerChannel, (f->mFormatFlags & kAudioFormatFlagIsFloat) ? @"float" : @"integer",
+        (f->mFormatFlags & kAudioFormatFlagIsNonInterleaved) ? @"non-interleaved" : @"interleaved", MSBDMixSampleKind(f) ? @"" : @" (not scaled)"];
+}
 static void MAStartUnitTrace(void) {   // every 5 s while it changes: how many output units have the render notify, and how many buffers were scaled
     static dispatch_source_t t; if (t) return;
     t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
     dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 5 * NSEC_PER_SEC, NSEC_PER_SEC);
     dispatch_source_set_event_handler(t, ^{
-        static uint64_t last = UINT64_MAX; uint64_t n = gMAScaledBuffers; if (n == last) return; last = n;
-        int units = 0; for (int i = 0; i < MA_MAX_UNITS; i++) if (gMAUnits[i].unit) units++;
-        MATraceLog([NSString stringWithFormat:@"[%@] output units with the render notify: %d, buffers scaled so far: %llu (multiplier %.3f)", [NSBundle mainBundle].bundleIdentifier, units, n, gMAOutputMult]);
+        static uint64_t last = UINT64_MAX; uint64_t n = gMAScaledBuffers, u = gMAUntouchedBuffers; if (n + u == last) return; last = n + u;
+        int units = 0; NSMutableArray *lines = [NSMutableArray array];
+        pthread_mutex_lock(&gMAUnitsLock);   // (held: a unit is never disposed while its formats are read here; the lines are written after)
+        for (int i = 0; i < MA_MAX_UNITS; i++) {
+            MAUnitState *st = &gMAUnits[i];
+            if (!st->unit) continue;
+            units++;
+            if (st->voice || st->traced || !st->scale.known) continue;
+            st->traced = YES;   // once per unit: the app's own format and the one its samples are scaled in
+            AudioStreamBasicDescription app = {0}, io = st->scale.fmt; UInt32 size = sizeof app;
+            AudioUnitGetProperty(st->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &app, &size);
+            [lines addObject:[NSString stringWithFormat:@"[%@] output unit %p: the app's format %@; scaling in the unit's output format %@%@", [NSBundle mainBundle].bundleIdentifier, st->unit, MAFormatText(&app), MAFormatText(&io),
+                memcmp(&app, &io, sizeof app) ? @" (they differ: the samples are read as the output side has them)" : @""]];
+        }
+        pthread_mutex_unlock(&gMAUnitsLock);
+        for (NSString *line in lines) MATraceLog(line);
+        MATraceLog([NSString stringWithFormat:@"[%@] output units with the render notify: %d, buffers scaled so far: %llu, left untouched (format or shape not proven): %llu, output formats read: %llu (multiplier %.3f)", [NSBundle mainBundle].bundleIdentifier, units, n, u, gMAFormatReads, gMAOutputMult]);
     });
     dispatch_resume(t);
 }
@@ -627,37 +650,34 @@ static MAUnitState *MAStateFor(AudioUnit unit) {
     for (int i = 0; i < MA_MAX_UNITS; i++) if (gMAUnits[i].unit == unit) return &gMAUnits[i];
     return NULL;
 }
+static void MAForgetUnitFormats(void) {   // the route changed (speaker, headphones, Bluetooth, a TV): every unit's output side may have another format now
+    pthread_mutex_lock(&gMAUnitsLock);
+    for (int i = 0; i < MA_MAX_UNITS; i++) if (gMAUnits[i].unit) {
+        MSBDMixScaleForget(&gMAUnits[i].scale);
+#if DEBUG
+        gMAUnits[i].traced = NO;   // (the trace names the formats again after the route change)
+#endif
+    }
+    pthread_mutex_unlock(&gMAUnitsLock);
+}
+static int MAReadOutputFormat(void *unit, AudioStreamBasicDescription *out) {   // the format of the buffers the render notification gets
+    DM_FEATURE_MARK("mixaudio-output-format");
+#if DEBUG
+    gMAFormatReads++;
+#endif
+    UInt32 size = sizeof *out;
+    return AudioUnitGetProperty((AudioUnit)unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, out, &size) == noErr && size == sizeof *out;
+}
 static OSStatus MARenderNotify(void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *io) {
     if (!(*flags & kAudioUnitRenderAction_PostRender) || bus != 0 || !io) return noErr;
     MAUnitState *st = (MAUnitState *)ref;
     float target = MAInCall() ? 1.0f : gMAOutputMult;   // (F1: read here too, so a call is at full level from its first buffer)
-    if (target >= 0.999f && st->lastGain >= 0.999f) return noErr;
-    if (!st->known) {
-        UInt32 size = sizeof st->fmt;
-        if (AudioUnitGetProperty(st->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &st->fmt, &size) != noErr) return noErr;
-        st->known = YES;
-    }
-    float from = st->lastGain;
-    st->lastGain = target;
+    int done = MSBDMixScaleRender(&st->scale, target, frames, io, MAReadOutputFormat, st->unit);
 #if DEBUG
-    gMAScaledBuffers++;   // (debug: proof the app's own output really passes through here -- traced from MAStartUnitTrace, never from the render thread)
+    if (done > 0) gMAScaledBuffers++; else if (done < 0) gMAUntouchedBuffers++;   // (debug: proof the app's own output really passes through here -- traced from MAStartUnitTrace, never from the render thread)
+#else
+    (void)done;
 #endif
-    BOOL isFloat = (st->fmt.mFormatFlags & kAudioFormatFlagIsFloat) != 0;
-    UInt32 bits = st->fmt.mBitsPerChannel;
-    for (UInt32 b = 0; b < io->mNumberBuffers; b++) {
-        AudioBuffer *buf = &io->mBuffers[b];
-        if (!buf->mData || !buf->mDataByteSize) continue;
-        if (isFloat && bits == 32) {
-            float *x = (float *)buf->mData; UInt32 n = buf->mDataByteSize / sizeof(float);
-            for (UInt32 i = 0; i < n; i++) x[i] *= from + (target - from) * ((float)i / (float)n);
-        } else if (!isFloat && bits == 16) {
-            SInt16 *x = (SInt16 *)buf->mData; UInt32 n = buf->mDataByteSize / sizeof(SInt16);
-            for (UInt32 i = 0; i < n; i++) x[i] = (SInt16)((float)x[i] * (from + (target - from) * ((float)i / (float)n)));
-        } else if (!isFloat && bits == 32) {
-            SInt32 *x = (SInt32 *)buf->mData; UInt32 n = buf->mDataByteSize / sizeof(SInt32);
-            for (UInt32 i = 0; i < n; i++) x[i] = (SInt32)((double)x[i] * (from + (target - from) * ((float)i / (float)n)));
-        }
-    }
     return noErr;
 }
 // Each C function hook costs every app ~50 KB: the patched code page copied twice ("Mach message" regions) plus a trampoline page
@@ -679,7 +699,7 @@ static void MAInstallQueueRest(void);
         for (int i = 0; i < MA_MAX_UNITS; i++) {
             if (gMAUnits[i].unit) continue;
             BOOL voice = d.componentSubType == kAudioUnitSubType_VoiceProcessingIO;
-            gMAUnits[i] = (MAUnitState){ *outInstance, {0}, NO, 1.0f, voice };
+            gMAUnits[i] = (MAUnitState){ *outInstance, MSBD_MIX_SCALE_STATE_INIT, voice, NO };
             if (voice) { gMAVoiceUnits++; MACallStateMaybeChanged(); }   // (F1: call audio -- counted, never given the render notify)
             else AudioUnitAddRenderNotify(*outInstance, MARenderNotify, &gMAUnits[i]);
 #if DEBUG
@@ -707,7 +727,7 @@ static void MAInstallQueueRest(void);
 }
 %hookf(OSStatus, AudioUnitSetProperty, AudioUnit unit, AudioUnitPropertyID prop, AudioUnitScope scope, AudioUnitElement elem, const void *data, UInt32 size) {
     OSStatus r = %orig;
-    if (prop == kAudioUnitProperty_StreamFormat) { MAUnitState *st = MAStateFor(unit); if (st) st->known = NO; }   // re-read on the next render
+    if (prop == kAudioUnitProperty_StreamFormat) { MAUnitState *st = MAStateFor(unit); if (st) MSBDMixScaleForget(&st->scale); }   // re-read on the next render
     return r;
 }
 %end
@@ -803,6 +823,8 @@ static void MAInstallQueueRest(void) { static dispatch_once_t once; dispatch_onc
         [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
             if ([n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan) gMAActive = NO;
         }];
+    if (!MAExcludedProcess())   // (the output units' system side follows the route with no call from the app: their formats are read again)
+        [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { MAForgetUnitFormats(); }];
     if (!MAExcludedProcess()) { %init(MAOutput); %init(MAQueue); }   // "com.besiktasliseba.mixaudio.setvolume.<hash of this app's own bundle id>" -- Mac Status Bar's per-app bridge, same pattern as MacAppBridge
 #if DEBUG
     MAObserve();

@@ -41,6 +41,7 @@ static NSString *DMStageBundle(UIView *stage) { return [stage isKindOfClass:[KSt
 static UIView *DMStageForBundle(NSString *bundleID) { return nil; }   // (1.8.8 H2: DMFitGroupForget takes the mark of a window that opened on its own from its stage -- none here)
 
 #include "asf-real.inc"   // (kStageBarHeight, gFitGroup, gFitSlots, DMFitGroupForget, DMTitleRecordHandEnded, then DMAerialPanBefore ... DMAerialGestureAfter)
+static void DMAerialPanFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL after) { (void)stage; (void)g; (void)after; }   // (1.8.8.3: the drag past the screen's edges, test-aerialpastedge.sh)
 
 static void (*o5_pan)(id, SEL, id), (*o5_resizeBR)(id, SEL, id);
 static void KO5Pan(id self, SEL _cmd, id g) { [(KStage *)self k_origPan:g]; }

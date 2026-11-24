@@ -503,6 +503,16 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     //  with its grips, UIKit's edit menu) or our own keyboard. Nothing is made active: a caret tap or a grip's pull over an active Finder window made
     //  that window active, which took the keys and ended the typing -- sticky-notes.md Feasibility 2a, a key of our keyboard over Finder too)
     if (DMDesktopTypingTakes(p, t.window.screen)) return;
+    // (1.8.8.3: a key of our own on-screen keyboard -- any field of ours: Finder's, the Dock's Downloads panel's search, Wi-Fi's -- is a key press,
+    //  never a click on the native window under the keyboard, active or not. With a Finder window active and the Downloads panel's search typed in,
+    //  the hit test below found the Finder window under the key and made it active again, which took the keys from the panel's field and closed the
+    //  keyboard at its first key (iPadOS 16.7.7). Before, only a key over no native window counted (the check that was further down).)
+    if (DMPointOnOwnKeyboard(p)) {
+#if DEBUG
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[native] touch at %@: on our own keyboard (%@), no window made active", NSStringFromCGPoint(p), NSStringFromCGRect(gOwnKeyboardFrame)]);
+#endif
+        return;
+    }
     // (1.8.8.2: a menu or dialog of ours open on this screen takes the touch -- a row picked, or the menu closed --, also where it lies over a Finder
     //  window: that window was made active first, by the hit test below, before the "a menu or dialog is open" check further down (a tap on Window >
     //  Left Half over a second Finder window brought that window forward). Finder's own menus and sheets in the native layer are its windows'.)
@@ -550,12 +560,6 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     }
     if (CACurrentMediaTime() - gNativeActivatedAt < 0.5) {   // (the rest of the tap that made it active -- a Dock icon tap is recognised as its touch ends)
         DMLog([NSString stringWithFormat:@"[native] a touch %.0f ms after activation at %@ (type %ld): not a new click, Finder stays active", (CACurrentMediaTime() - gNativeActivatedAt) * 1000.0, NSStringFromCGPoint(p), (long)t.type]);
-        return;
-    }
-    if (gNativeFocusLock && DMPointOnOwnKeyboard(p)) {   // (typing on the on-screen keyboard: the window stays active)
-#if DEBUG
-        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[native] touch at %@: on our own keyboard (%@), the window stays active", NSStringFromCGPoint(p), NSStringFromCGRect(gOwnKeyboardFrame)]);
-#endif
         return;
     }
     UIWindow *taker = DMNativeWindowTaking(p, gNativeLayer.windowLevel);   // (our menus, the Dock, alerts: Finder stays active)
