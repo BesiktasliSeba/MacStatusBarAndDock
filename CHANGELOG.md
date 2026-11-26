@@ -2,6 +2,18 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.9
+
+### New
+- Mac Lock Screen: your Lock Screen looks like a Mac's, with a Mac clock, your picture and name above the unlock hint, Mac-style cards and, on iPadOS 15 and 16, a blurred wallpaper. Each part is optional. It's off by default: turn it on in Settings > Status Bar > Mac Lock Screen.
+- Mac pointer: macOS's resize pointers at window edges and corners, on Stage Manager windows on iPadOS 18 (instead of iPadOS's grey circle with arrows) and at the resize corners of Aerial, Zetsu and MilkyWay4 windows. It's on by default on iPadOS 18; on iPadOS 15 to 17, turn on Mac Resize Pointers in Settings > Pointer.
+
+### Fixes
+- With the Stage Manager engine, a window of an app with its own size in App Window Sizes can now be moved partly off the screen's edges on iPads where it used to spring back inside (#20).
+- With the Stage Manager engine, a tap on a Dock icon over a window no longer also brings that window to the front (#20).
+- With the Stage Manager engine, a window dragged past the left or right edge of the screen from just below its title bar now stays there, as one dragged by its title bar does. It used to jump back inside.
+- Hide Status Bar on Lock Screen in Settings > Status Bar now hides the Lock Screen's status bar on iPadOS 16 and 18 too. It used to stay there.
+
 ## 1.8.8.4
 
 ### Improvements

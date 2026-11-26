@@ -979,6 +979,8 @@
 			<string>Lock Screen</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.maclockstatusbar/prefsChanged</string>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
@@ -1003,6 +1005,18 @@
 			<string>skipLockAfterRespring</string>
 			<key>label</key>
 			<string>Skip Lock Screen After Respring</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>MSBMacLockScreenController</string>
+			<key>get</key>
+			<string>msb_macLockValue:</string>
+			<key>id</key>
+			<string>MAC_LOCK_SCREEN</string>
+			<key>label</key>
+			<string>Mac Lock Screen</string>
 		</dict>
 	</array>
 	<key>title</key>

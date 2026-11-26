@@ -530,7 +530,7 @@ static inline NSString *MSBDReportRecentCrashes(NSUInteger maxItems, NSUInteger 
 // Our switches on the Status Bar, Desktop, Windows & Multitasking and Dock pages that are on (their row titles), read from the pages' own lists.
 static inline NSArray<NSString *> *MSBDSwitchesOn(void) {
     NSMutableArray *on = [NSMutableArray array];
-    for (NSString *page in @[@"MacStatusBarPrefs/Windows", @"MacStatusBarPrefs/Desktop", @"MacStatusBarPrefs/Root", @"DockMagnificationPrefs/Root"]) {   // (the window switches first: the list is cut at its length)
+    for (NSString *page in @[@"MacStatusBarPrefs/Windows", @"MacStatusBarPrefs/Desktop", @"MacStatusBarPrefs/Root", @"DockMagnificationPrefs/Root", @"MacStatusBarPrefs/MacLockScreen"]) {   // (the window switches first: the list is cut at its length)
         NSArray *bp = [page componentsSeparatedByString:@"/"];
         NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%s/%@.bundle/%@.plist", MSBD_PREF_BUNDLES, bp[0], bp[1]]];
         for (NSDictionary *item in [plist[@"items"] isKindOfClass:[NSArray class]] ? plist[@"items"] : @[]) {
@@ -546,6 +546,19 @@ static inline NSArray<NSString *> *MSBDSwitchesOn(void) {
         }
     }
     return on;
+}
+// Mac Lock Screen (1.8.9, F49; design 3.4 5): on or not, and the parts SpringBoard left to another modification -- part labels only, never a
+// name (macsettings/MacLockScreen.x writes the state file; common/MacLockCoexist.h MLPartKey has the labels). nil while it is off.
+static inline NSString *MSBDMacLockReportLine(void) {
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("enabled"), CFSTR("com.besiktasliseba.maclockscreen"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
+    if (v) CFRelease(v);
+    if (!on) return nil;
+    NSDictionary *st = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-LockParts.plist"];
+    NSDictionary *h = [st isKindOfClass:[NSDictionary class]] && [st[@"handled"] isKindOfClass:[NSDictionary class]] ? st[@"handled"] : nil;
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSString *k in @[@"clock", @"background", @"cards", @"user", @"pair"]) if ([h[k] respondsToSelector:@selector(boolValue)] && [h[k] boolValue]) [parts addObject:k];
+    return [NSString stringWithFormat:@"- Mac Lock Screen: on%@\n", parts.count ? [@"; left to another tweak: " stringByAppendingString:[parts componentsJoinedByString:@", "]] : @""];
 }
 // For testers on an untested iPadOS version: the exact version, "Enable Anyway", and our switches that are on (names only, at most `maxChars`).
 static inline NSString *MSBDReportTesterInfo(NSUInteger maxChars) {
@@ -577,6 +590,8 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
         //  exact rows that failed -- a report then says why the Window Engine list greys it; issue #2 asked for the verdict, a 16.3.1 report for the why)
         NSString *sm = MSBDStageManagerReportLine(chars[i]);
         if (sm) [body appendString:sm];
+        NSString *macLock = MSBDMacLockReportLine();
+        if (macLock) [body appendString:macLock];
         NSString *tester = MSBDReportTesterInfo(chars[i]);
         if (tester) [body appendString:tester];
         NSString *summary = MSBDReportCrashSummary(frames[i]);

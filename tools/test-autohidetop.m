@@ -52,7 +52,7 @@ static BOOL gTFit = NO;
 static BOOL DMFitEnabled(void) { return gTFit; }
 static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;
 static NSDictionary *DMSMStageItemsMap(id stage) { (void)stage; return gTWindows; }
-static NSString *DMSMItemKey(id item) { return item; }
+// (DMSMItemKey: test-smpastedge.m's, 1.8.9 B114 -- the stage's items are their keys)
 static UIView *DMSMCardFor(NSString *key) { (void)key; return nil; }
 static BOOL DMSMCardIsFullSize(UIView *card) { (void)card; return NO; }
 static int gTPlaced;

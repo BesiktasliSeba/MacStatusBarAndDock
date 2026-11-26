@@ -1,0 +1,184 @@
+# hooktypes-ipados.txt -- the type encodings of the methods our Lock Screen hooks hook (macsettings/LockStatusBar.x, macsettings/MacLockScreen.x),
+# as iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5 have them: read 25 Nov 2026 from Apple's IPSWs (the dyld shared cache: each method's list entry,
+# found by the method's own address, gives its types; nothing run). Read by tools/test-hooktypes.sh (1.8.9, after a test build's Lock Screen
+# crash). A method a version does not have has no line for that version.
+# <iPadOS version> <TAB> -[Class selector] <TAB> <types as the runtime reports them> [<TAB> inherited -[Superclass selector] ...]
+15.6.1	-[CSCoverSheetView layoutSubviews]	v16@0:8
+15.6.1	-[CSCoverSheetViewController _invalidateStatusBarAssertions]	v16@0:8
+15.6.1	-[CSCoverSheetViewController _setFakeStatusBarEnabled:]	v20@0:8B16
+15.6.1	-[CSCoverSheetViewController _updateStatusBar]	v16@0:8
+15.6.1	-[CSCoverSheetViewController scrollablePageViewController:scrollViewDidScroll:]	v32@0:8@16@24
+15.6.1	-[CSCoverSheetViewController setInScreenOffMode:]	v20@0:8B16
+15.6.1	-[CSCoverSheetViewController setInScreenOffMode:forAutoUnlock:fromUnlockSource:]	v28@0:8B16B20i24
+15.6.1	-[CSCoverSheetViewController viewDidAppear:]	v20@0:8B16
+15.6.1	-[CSCoverSheetViewController viewDidDisappear:]	v20@0:8B16
+15.6.1	-[CSCoverSheetViewController viewDidLoad]	v16@0:8
+15.6.1	-[CSCoverSheetViewController viewWillAppear:]	v20@0:8B16
+15.6.1	-[CSCoverSheetViewController viewWillDisappear:]	v20@0:8B16
+15.6.1	-[CSMainPageView layoutSubviews]	v16@0:8
+15.6.1	-[CSTeachableMomentsContainerView layoutSubviews]	v16@0:8
+15.6.1	-[NCNotificationListView layoutSubviews]	v16@0:8
+15.6.1	-[PLPlatterView layoutSubviews]	v16@0:8
+15.6.1	-[SBDashBoardStatusBarController setStatusBarAlpha:style:legibilitySettings:]	v40@0:8@16q24@32
+15.6.1	-[SBDashBoardStatusBarController setStatusBarHidden:forReason:]	v28@0:8B16@20
+15.6.1	-[SBFLockScreenDateView _updateLabelAlpha]	v16@0:8
+15.6.1	-[SBFLockScreenDateView layoutSubviews]	v16@0:8
+15.6.1	-[SBFLockScreenDateView setCustomSubtitleView:]	v24@0:8@16
+15.6.1	-[SBFLockScreenDateView setDate:]	v24@0:8@16
+15.6.1	-[SBLockScreenManager lockUIFromSource:withOptions:]	v28@0:8i16@20
+15.6.1	-[SBLockScreenManager lockUIFromSource:withOptions:completion:]	v36@0:8i16@20@?28
+15.6.1	-[SBUICallToActionLabel fadeIn]	v16@0:8
+15.6.1	-[SBUICallToActionLabel fadeOut]	v16@0:8
+15.6.1	-[SBUICallToActionLabel layoutSubviews]	v16@0:8
+15.6.1	-[SBUICallToActionLabel setText:]	v24@0:8@16
+15.6.1	-[SBUICallToActionLabel setText:forLanguage:animated:]	v36@0:8@16@24B32
+15.6.1	-[SBUICallToActionLabel setVisible:animated:]	v24@0:8B16B20
+15.6.1	-[SBUILegibilityLabel setString:]	v24@0:8@16
+15.6.1	-[CSCoverSheetView didMoveToWindow]	v16@0:8	inherited -[UIView(Hierarchy) didMoveToWindow] (the class has none of its own here)
+15.6.1	-[SBUICallToActionLabel setAlpha:]	v24@0:8d16	inherited -[UIView(Rendering) setAlpha:] (the class has none of its own here)
+15.6.1	-[SBUICallToActionLabel setHidden:]	v20@0:8B16	inherited -[UIView(Rendering) setHidden:] (the class has none of its own here)
+15.6.1	-[SBUILegibilityLabel setAlpha:]	v24@0:8d16	inherited -[UIView(Rendering) setAlpha:] (the class has none of its own here)
+15.6.1	-[SBUILegibilityLabel setHidden:]	v20@0:8B16	inherited -[UIView(Rendering) setHidden:] (the class has none of its own here)
+16.7.7	-[CSCoverSheetView layoutSubviews]	v16@0:8
+16.7.7	-[CSCoverSheetViewController _cleanupPosterSwitcherPresentationForCompleted:withActivatingTouches:]	v28@0:8B16@20
+16.7.7	-[CSCoverSheetViewController _invalidateStatusBarAssertions]	v16@0:8
+16.7.7	-[CSCoverSheetViewController _prepareForPosterSwitcherPresentation]	v16@0:8
+16.7.7	-[CSCoverSheetViewController _setFakeStatusBarEnabled:]	v20@0:8B16
+16.7.7	-[CSCoverSheetViewController _updateStatusBar]	v16@0:8
+16.7.7	-[CSCoverSheetViewController scrollablePageViewController:scrollViewDidScroll:]	v32@0:8@16@24
+16.7.7	-[CSCoverSheetViewController setInScreenOffMode:]	v20@0:8B16
+16.7.7	-[CSCoverSheetViewController setInScreenOffMode:forAutoUnlock:fromUnlockSource:]	v28@0:8B16B20i24
+16.7.7	-[CSCoverSheetViewController viewDidAppear:]	v20@0:8B16
+16.7.7	-[CSCoverSheetViewController viewDidDisappear:]	v20@0:8B16
+16.7.7	-[CSCoverSheetViewController viewDidLoad]	v16@0:8
+16.7.7	-[CSCoverSheetViewController viewWillAppear:]	v20@0:8B16
+16.7.7	-[CSCoverSheetViewController viewWillDisappear:]	v20@0:8B16
+16.7.7	-[CSMainPageView layoutSubviews]	v16@0:8
+16.7.7	-[CSProminentDisplayView layoutSubviews]	v16@0:8
+16.7.7	-[CSProminentDisplayView setDisplayDate:]	v24@0:8@16
+16.7.7	-[CSProminentDisplayViewController setTransientSubtitleText:]	v24@0:8@16
+16.7.7	-[CSProminentDisplayViewController setTransientSubtitleText:withTimeout:]	v32@0:8@16d24
+16.7.7	-[CSProminentTimeView setDate:]	v24@0:8@16
+16.7.7	-[CSTeachableMomentsContainerView layoutSubviews]	v16@0:8
+16.7.7	-[NCNotificationListView layoutSubviews]	v16@0:8
+16.7.7	-[PLPlatterView layoutSubviews]	v16@0:8
+16.7.7	-[SBDashBoardStatusBarController setStatusBarAlpha:style:legibilitySettings:]	v40@0:8@16q24@32
+16.7.7	-[SBDashBoardStatusBarController setStatusBarHidden:forReason:]	v28@0:8B16@20
+16.7.7	-[SBFLockScreenDateView _updateLabelAlpha]	v16@0:8
+16.7.7	-[SBFLockScreenDateView layoutSubviews]	v16@0:8
+16.7.7	-[SBFLockScreenDateView setCustomSubtitleView:]	v24@0:8@16
+16.7.7	-[SBFLockScreenDateView setDate:]	v24@0:8@16
+16.7.7	-[SBFluidSwitcherGestureManager _shouldBeginLiveWindowResizeGesture:]	B24@0:8@16
+16.7.7	-[SBFluidSwitcherGestureManager _shouldBeginTapToBringItemContainerForwardGesture:]	B24@0:8@16
+16.7.7	-[SBFluidSwitcherGestureManager _shouldTapToBringItemContainerForward:receiveTouch:]	B32@0:8@16@24
+16.7.7	-[SBFluidSwitcherItemContainer _updateForPointerHoveringOverEdge:]	v24@0:8Q16
+16.7.7	-[SBLockScreenManager lockUIFromSource:withOptions:]	v28@0:8i16@20
+16.7.7	-[SBLockScreenManager lockUIFromSource:withOptions:completion:]	v36@0:8i16@20@?28
+16.7.7	-[SBUICallToActionLabel fadeIn]	v16@0:8
+16.7.7	-[SBUICallToActionLabel fadeOut]	v16@0:8
+16.7.7	-[SBUICallToActionLabel layoutSubviews]	v16@0:8
+16.7.7	-[SBUICallToActionLabel setText:]	v24@0:8@16
+16.7.7	-[SBUICallToActionLabel setText:forLanguage:animated:]	v36@0:8@16@24B32
+16.7.7	-[SBUICallToActionLabel setVisible:animated:]	v24@0:8B16B20
+16.7.7	-[SBUILegibilityLabel setString:]	v24@0:8@16
+16.7.7	-[CSCoverSheetView didMoveToWindow]	v16@0:8	inherited -[UIView(Hierarchy) didMoveToWindow] (the class has none of its own here)
+16.7.7	-[SBUICallToActionLabel setAlpha:]	v24@0:8d16	inherited -[UIView(Rendering) setAlpha:] (the class has none of its own here)
+16.7.7	-[SBUICallToActionLabel setHidden:]	v20@0:8B16	inherited -[UIView(Rendering) setHidden:] (the class has none of its own here)
+16.7.7	-[SBUILegibilityLabel setAlpha:]	v24@0:8d16	inherited -[UIView(Rendering) setAlpha:] (the class has none of its own here)
+16.7.7	-[SBUILegibilityLabel setHidden:]	v20@0:8B16	inherited -[UIView(Rendering) setHidden:] (the class has none of its own here)
+17.5.1	-[CSCoverSheetView layoutSubviews]	v16@0:8
+17.5.1	-[CSCoverSheetViewController _cleanupPosterSwitcherPresentationForCompleted:withActivatingTouches:]	v28@0:8B16@20
+17.5.1	-[CSCoverSheetViewController _invalidateStatusBarAssertions]	v16@0:8
+17.5.1	-[CSCoverSheetViewController _prepareForPosterSwitcherPresentation]	v16@0:8
+17.5.1	-[CSCoverSheetViewController _setFakeStatusBarEnabled:]	v20@0:8B16
+17.5.1	-[CSCoverSheetViewController _updateStatusBar]	v16@0:8
+17.5.1	-[CSCoverSheetViewController scrollablePageViewController:scrollViewDidScroll:]	v32@0:8@16@24
+17.5.1	-[CSCoverSheetViewController setInScreenOffMode:]	v20@0:8B16
+17.5.1	-[CSCoverSheetViewController setInScreenOffMode:forAutoUnlock:fromUnlockSource:]	v28@0:8B16B20i24
+17.5.1	-[CSCoverSheetViewController viewDidAppear:]	v20@0:8B16
+17.5.1	-[CSCoverSheetViewController viewDidDisappear:]	v20@0:8B16
+17.5.1	-[CSCoverSheetViewController viewDidLoad]	v16@0:8
+17.5.1	-[CSCoverSheetViewController viewWillAppear:]	v20@0:8B16
+17.5.1	-[CSCoverSheetViewController viewWillDisappear:]	v20@0:8B16
+17.5.1	-[CSMainPageView layoutSubviews]	v16@0:8
+17.5.1	-[CSProminentDisplayView layoutSubviews]	v16@0:8
+17.5.1	-[CSProminentDisplayView setDisplayDate:]	v24@0:8@16
+17.5.1	-[CSProminentDisplayViewController setTransientSubtitleText:]	v24@0:8@16
+17.5.1	-[CSProminentDisplayViewController setTransientSubtitleText:withTimeout:]	v32@0:8@16d24
+17.5.1	-[CSProminentTimeView setDate:]	v24@0:8@16
+17.5.1	-[CSTeachableMomentsContainerView layoutSubviews]	v16@0:8
+17.5.1	-[NCNotificationListView layoutSubviews]	v16@0:8
+17.5.1	-[PLPlatterView layoutSubviews]	v16@0:8
+17.5.1	-[SBDashBoardStatusBarController setStatusBarAlpha:style:legibilitySettings:]	v40@0:8@16q24@32
+17.5.1	-[SBDashBoardStatusBarController setStatusBarHidden:forReason:]	v28@0:8B16@20
+17.5.1	-[SBFLockScreenDateView _updateLabelAlpha]	v16@0:8
+17.5.1	-[SBFLockScreenDateView layoutSubviews]	v16@0:8
+17.5.1	-[SBFLockScreenDateView setCustomSubtitleView:]	v24@0:8@16
+17.5.1	-[SBFLockScreenDateView setDate:]	v24@0:8@16
+17.5.1	-[SBFluidSwitcherGestureManager _shouldBeginClickDownToBringItemContainerForwardGesture:]	B24@0:8@16
+17.5.1	-[SBFluidSwitcherGestureManager _shouldBeginLiveWindowResizeGesture:]	B24@0:8@16
+17.5.1	-[SBFluidSwitcherGestureManager _shouldBeginTapToBringItemContainerForwardGesture:]	B24@0:8@16
+17.5.1	-[SBFluidSwitcherGestureManager _shouldTapToBringItemContainerForward:receiveTouch:]	B32@0:8@16@24
+17.5.1	-[SBFluidSwitcherItemContainer _updateForPointerHoveringOverEdge:]	v24@0:8Q16
+17.5.1	-[SBLockScreenManager lockUIFromSource:withOptions:]	v28@0:8i16@20
+17.5.1	-[SBLockScreenManager lockUIFromSource:withOptions:completion:]	v36@0:8i16@20@?28
+17.5.1	-[SBUICallToActionLabel fadeIn]	v16@0:8
+17.5.1	-[SBUICallToActionLabel fadeOut]	v16@0:8
+17.5.1	-[SBUICallToActionLabel layoutSubviews]	v16@0:8
+17.5.1	-[SBUICallToActionLabel setText:]	v24@0:8@16
+17.5.1	-[SBUICallToActionLabel setText:forLanguage:animated:]	v36@0:8@16@24B32
+17.5.1	-[SBUICallToActionLabel setVisible:animated:]	v24@0:8B16B20
+17.5.1	-[SBUILegibilityLabel setString:]	v24@0:8@16
+17.5.1	-[CSCoverSheetView didMoveToWindow]	v16@0:8	inherited -[UIView(Hierarchy) didMoveToWindow] (the class has none of its own here)
+17.5.1	-[SBUICallToActionLabel setAlpha:]	v24@0:8d16	inherited -[UIView(Rendering) setAlpha:] (the class has none of its own here)
+17.5.1	-[SBUICallToActionLabel setHidden:]	v20@0:8B16	inherited -[UIView(Rendering) setHidden:] (the class has none of its own here)
+17.5.1	-[SBUILegibilityLabel setAlpha:]	v24@0:8d16	inherited -[UIView(Rendering) setAlpha:] (the class has none of its own here)
+17.5.1	-[SBUILegibilityLabel setHidden:]	v20@0:8B16	inherited -[UIView(Rendering) setHidden:] (the class has none of its own here)
+18.5	-[CSCoverSheetView layoutSubviews]	v16@0:8
+18.5	-[CSCoverSheetViewController _cleanupPosterSwitcherPresentationForCompleted:withActivatingTouches:]	v28@0:8B16@20
+18.5	-[CSCoverSheetViewController _invalidateStatusBarAssertions]	v16@0:8
+18.5	-[CSCoverSheetViewController _prepareForPosterSwitcherPresentation]	v16@0:8
+18.5	-[CSCoverSheetViewController _setFakeStatusBarEnabled:]	v20@0:8B16
+18.5	-[CSCoverSheetViewController _updateStatusBar]	v16@0:8
+18.5	-[CSCoverSheetViewController scrollablePageViewController:scrollViewDidScroll:]	v32@0:8@16@24
+18.5	-[CSCoverSheetViewController setInScreenOffMode:]	v20@0:8B16
+18.5	-[CSCoverSheetViewController setInScreenOffMode:forAutoUnlock:fromUnlockSource:]	v28@0:8B16B20i24
+18.5	-[CSCoverSheetViewController viewDidAppear:]	v20@0:8B16
+18.5	-[CSCoverSheetViewController viewDidDisappear:]	v20@0:8B16
+18.5	-[CSCoverSheetViewController viewDidLoad]	v16@0:8
+18.5	-[CSCoverSheetViewController viewWillAppear:]	v20@0:8B16
+18.5	-[CSCoverSheetViewController viewWillDisappear:]	v20@0:8B16
+18.5	-[CSMainPageView layoutSubviews]	v16@0:8
+18.5	-[CSProminentDisplayView layoutSubviews]	v16@0:8
+18.5	-[CSProminentDisplayView setDisplayDate:]	v24@0:8@16
+18.5	-[CSProminentDisplayViewController setTransientSubtitleText:]	v24@0:8@16
+18.5	-[CSProminentDisplayViewController setTransientSubtitleText:withTimeout:]	v32@0:8@16d24
+18.5	-[CSProminentTimeView setDate:]	v24@0:8@16
+18.5	-[CSTeachableMomentsContainerView layoutSubviews]	v16@0:8
+18.5	-[NCNotificationListView layoutSubviews]	v16@0:8
+18.5	-[PLPlatterView layoutSubviews]	v16@0:8
+18.5	-[SBDashBoardStatusBarController setStatusBarAlpha:style:legibilitySettings:]	v40@0:8@16q24@32
+18.5	-[SBDashBoardStatusBarController setStatusBarHidden:forReason:]	v28@0:8B16@20
+18.5	-[SBFLockScreenDateView _updateLabelAlpha]	v16@0:8
+18.5	-[SBFLockScreenDateView layoutSubviews]	v16@0:8
+18.5	-[SBFLockScreenDateView setCustomSubtitleView:]	v24@0:8@16
+18.5	-[SBFLockScreenDateView setDate:]	v24@0:8@16
+18.5	-[SBFluidSwitcherGestureManager _shouldBeginClickDownToBringItemContainerForwardGesture:]	B24@0:8@16
+18.5	-[SBFluidSwitcherGestureManager _shouldBeginLiveWindowResizeGesture:]	B24@0:8@16
+18.5	-[SBFluidSwitcherGestureManager _shouldBeginTapToBringItemContainerForwardGesture:]	B24@0:8@16
+18.5	-[SBFluidSwitcherGestureManager _shouldTapToBringItemContainerForward:receiveTouch:]	B32@0:8@16@24
+18.5	-[SBFluidSwitcherItemContainer _updateForPointerHoveringOverEdge:]	v24@0:8Q16
+18.5	-[SBLockScreenManager lockUIFromSource:withOptions:]	v28@0:8i16@20
+18.5	-[SBLockScreenManager lockUIFromSource:withOptions:completion:]	v36@0:8i16@20@?28
+18.5	-[SBUICallToActionLabel fadeIn]	v16@0:8
+18.5	-[SBUICallToActionLabel fadeOut]	v16@0:8
+18.5	-[SBUICallToActionLabel layoutSubviews]	v16@0:8
+18.5	-[SBUICallToActionLabel setText:]	v24@0:8@16
+18.5	-[SBUICallToActionLabel setText:forLanguage:animated:]	v36@0:8@16@24B32
+18.5	-[SBUICallToActionLabel setVisible:animated:]	v24@0:8B16B20
+18.5	-[SBUILegibilityLabel setString:]	v24@0:8@16
+18.5	-[CSCoverSheetView didMoveToWindow]	v16@0:8	inherited -[UIView(Hierarchy) didMoveToWindow] (the class has none of its own here)
+18.5	-[SBUICallToActionLabel setAlpha:]	v24@0:8d16	inherited -[UIView(Rendering) setAlpha:] (the class has none of its own here)
+18.5	-[SBUICallToActionLabel setHidden:]	v20@0:8B16	inherited -[UIView(Rendering) setHidden:] (the class has none of its own here)
+18.5	-[SBUILegibilityLabel setAlpha:]	v24@0:8d16	inherited -[UIView(Rendering) setAlpha:] (the class has none of its own here)
+18.5	-[SBUILegibilityLabel setHidden:]	v20@0:8B16	inherited -[UIView(Rendering) setHidden:] (the class has none of its own here)

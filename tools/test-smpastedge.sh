@@ -19,16 +19,23 @@ IFACE='@interface DMSMTitleBar : UIView <UIGestureRecognizerDelegate>'
 DECL=('static const CGFloat kSMBarH = ' 'static CFTimeInterval gSMDragUntil = 0;' 'static NSMutableSet<NSString *> *gSMBehindDock;'
       'static NSMutableDictionary<NSString *, NSNumber *> *gSMDockHeightBySize;')
 GLUE_LINES=('static NSMutableDictionary<NSString *, NSArray<NSValue *> *> *gSMPastEdge;' 'static NSMutableArray<NSString *> *gSMPastEdgeOrder;'
-            'static NSString *gSMPastEdgeResizeKey; static CGRect gSMPastEdgeResizeFrom;' 'static CGRect gSMPastEdgeDesk; static CGSize gSMPastEdgeScreen;')
-GLUE_FN=('static BOOL DMSMPastEdgeAllowedOn(CGSize scr) {' 'static void DMSMPastEdgeRemove(NSString *key) {' 'static BOOL DMSMPastEdgeHeld(CGPoint c, CGSize s, CGSize scr) {'
+            'static NSString *gSMPastEdgeResizeKey; static CGRect gSMPastEdgeResizeFrom;' 'static CGRect gSMPastEdgeDesk; static CGSize gSMPastEdgeScreen;'
+            'static NSMutableDictionary<NSString *, NSValue *> *gSMGridFirstBySize;'
+            'static id gSMDragItem16;' 'static NSString *gSMAppleDragKey;' 'static CFTimeInterval gSMAppleDragToldAt;')   # (1.8.9, B114: Stage Manager's own drag)
+GLUE_FN=('static CGSize DMSMPastEdgeGridFirst(CGSize scr) {' 'static CGSize DMSMPastEdgeLaid(CGSize s, CGSize scr) {' 'static void DMSMPastEdgeGridNote(CGSize container, int axis, id list) {'
+         'static BOOL DMSMPastEdgeAllowedOn(CGSize scr) {' 'static void DMSMPastEdgeRemove(NSString *key) {' 'static BOOL DMSMPastEdgeHeld(CGPoint c, CGSize s, CGSize scr) {'
          'static void DMSMPastEdgeResizeBegan(unsigned dragged, CGRect start) {'
          'static BOOL DMSMPastEdgeKeepIn(CGPoint *cp, CGSize pts, CGSize scr, CGRect u) {' 'static CGRect DMSMPastEdgeDeskOn(UIScreen *s, CGSize size) {'
          'static BOOL DMSMPastEdgeHeldAt(CGPoint c, CGSize s, CGSize scr, CGPoint *keep) {' 'static void DMSMPastEdgeDragBegin(UIView *card) {'
          'static CGPoint DMSMPastEdgeDragKept(UIView *card, CGPoint t) {'
+         'static void DMSMPastEdgeSet(NSString *key, CGPoint centre, CGSize size, CGSize S, BOOL prune) {'
          'static void DMSMPastEdgeDropped(NSString *key, UIScreen *scn, CGRect droppedOnScreen, BOOL snapped, CGPoint at, CGPoint plain) {'
+         'static BOOL DMSMWindowDragLive(void) {' 'static BOOL DMSMAppleDragNote(NSString *key, CGPoint *c, CGSize s, CGSize scr) {'
+         'static BOOL DMSMAppleDragPass17(id item, CGPoint *p, CGSize z, CGSize container) {'
          'static CGRect DMSMCardDesk(CGRect u, CGSize scr, BOOL behindDock) {' 'static void DMSMJoinOwnPlace(NSString *key, CGSize *pts, CGPoint *cp, CGSize scr, CGRect u) {'
          'static id DMSMAttrsFitScreen(id attrs, id identity, BOOL behindDock, NSString *bundle) {'
-         'static NSArray<NSArray *> *DMSMPastEdgeBefore16(id m, CGRect area) {' 'static void DMSMPastEdgeAfter16(id m, NSArray<NSArray *> *held) {')
+         'static NSArray<NSArray *> *DMSMPastEdgeBefore16(id m, CGRect area) {' 'static void DMSMPastEdgeAfter16(id m, NSArray<NSArray *> *held) {'
+         'static void DMSMPastEdgeMoved(CGRect was, CGRect now, CGSize scr) {')
 PAN='- (void)dm_pan:(UIPanGestureRecognizer *)g {'
 TOUCH='- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)t {'   # (the bar's: where a touch goes down, 1.8.8.3)
 
@@ -80,6 +87,14 @@ sites() {   # $1 StatusBar.x, $2 SMEngineAPI.h, $3 crashmap-rules.txt, $4 quiet,
      && grep -qF 'CGPoint want = [en[3] boolValue] ? p : past ? keep : DMSMClampCenter(p, z, area);' "$E"; then
     [ -n "$q" ] || echo "PASS  StatusBar.x / SMEngineAPI.h: iPadOS 17 and 18's pass gets the lookup and keeps a recorded window (not full screen, its top under the area)"
   else [ -n "$q" ] || echo "FAIL  StatusBar.x / SMEngineAPI.h: iPadOS 17 and 18's pass does not keep a recorded window as built"; n=$((n + 1)); fi
+  # 1.8.9 (B114): Stage Manager's own window drag. iPadOS 16's two pass hooks (16.1's and 16.0's) name the pass's dragging item around Apple's pass and
+  # give the one before back after it; 17 and 18's hook hands the pass the dragged question right after the lookup, and the pass asks it for each
+  # window before its keep (the place it hands back is the one kept)
+  if [ "$(awk '/^    id wasDrag = gSMDragItem16; gSMDragItem16 = d;$/{a=NR} /^    id out = %orig;$/{if (a && NR == a + 1) b=NR} /^    gSMDragItem16 = wasDrag;$/{if (b && NR == b + 1) {n++; a=0; b=0}} END{print n+0}' "$X")" = 2 ] \
+     && awk '/^- \(CGRect\)_performAutoLayoutWithSpace:\(id\)space configuration:\(id\)cfg stageInset:\(UIEdgeInsets\)inset \{/{f=1} f&&/^    pass.kept = DMSMPastEdgeHeldAt;/{k=NR} f&&/^    pass.dragged = DMSMAppleDragPass17;/{d=NR} f&&/^}/{exit} END{exit !(k && d == k + 1)}' "$X" \
+     && awk '/if \(pass->dragged && !\[en\[3\] boolValue\] && pass->container.width > 0 && pass->container.height > 0 && pass->dragged\(en\[0\], &p, z, pass->container\)\) keep = p;/{d=NR} /BOOL past = !\[en\[3\] boolValue\] && pass->kept/{p=NR} END{exit !(d && p > d && p <= d + 3)}' "$E"; then
+    [ -n "$q" ] || echo "PASS  StatusBar.x / SMEngineAPI.h: iPadOS 16's passes name their dragging item; 17 and 18's pass asks for the window under Stage Manager's own drag before its keep"
+  else [ -n "$q" ] || echo "FAIL  StatusBar.x / SMEngineAPI.h: Stage Manager's own drag is not handed to the layout passes as built"; n=$((n + 1)); fi
   # a resize by hand: the gesture hook (16, 17 and 18) tells the glue where each resize begins -- the sides its edge drags, the card as it began --
   # after Apple's own handling of the event, as it reads them for the title bar's record; unread: it says so (nothing followed)
   t=$(fn "$A" 'static id DMSMRAGesture(id self, SEL _cmd, id event) {')
@@ -88,6 +103,13 @@ sites() {   # $1 StatusBar.x, $2 SMEngineAPI.h, $3 crashmap-rules.txt, $4 quiet,
        /^        \} else DMSMPastEdgeResizeBegan\(0, CGRectNull\);$/{e=NR} END{exit !(r && p > r && b == p + 4 && e == b + 1)}'; then
     [ -n "$q" ] || echo "PASS  SMResizeAnchor.h: the resize gesture's hook tells the glue where each resize begins (its dragged sides, the card), after Apple's handling"
   else [ -n "$q" ] || echo "FAIL  SMResizeAnchor.h: the resize gesture's hook does not tell the glue where a resize begins"; n=$((n + 1)); fi
+  # 1.8.9 (GitHub #20): the size lists' hooks note the first entry of each list they hand Stage Manager (the smallest window it lays out there), for
+  # the record and every lookup to know a window by its laid-out size
+  if awk '/^- \(id\)gridWidths \{/{w=1} w&&/^    id l = DMSMFineGrid\(v, CGRectGetWidth\(cb\), 0\);$/{a=NR} w&&/^    DMSMPastEdgeGridNote\(cb.size, 0, l\);/{b=NR} w&&/^    return l;$/{c=NR; w=0}
+          /^- \(id\)gridHeights \{/{h=1} h&&/^    id l = DMSMFineGrid\(v, CGRectGetHeight\(cb\), 1\);$/{d=NR} h&&/^    DMSMPastEdgeGridNote\(cb.size, 1, l\);/{e=NR} h&&/^    return l;$/{f=NR; h=0}
+          END{exit !(a && b == a + 1 && c == b + 1 && d && e == d + 1 && f == e + 1)}' "$X"; then
+    [ -n "$q" ] || echo "PASS  StatusBar.x: the gridWidths / gridHeights hooks note the first width and height of the lists they hand over"
+  else [ -n "$q" ] || echo "FAIL  StatusBar.x: the size lists' hooks do not note their lists' first sizes"; n=$((n + 1)); fi
   # the rule's header right after SMFit.h; no timer, poll or delayed work in the glue (the chip cost: a few comparisons per move and per pass)
   t=$(for h in "${GLUE_FN[@]}"; do fn "$X" "$h"; done)
   if grep -A1 -F '#include "SMFit.h" ' "$X" | grep -q '^#include "SMPastEdge.h" ' && ! echo "$t" | grep -qE 'NSTimer|dispatch_after|CADisplayLink|performSelector:.*afterDelay|scheduledTimer'; then
@@ -97,7 +119,8 @@ sites() {   # $1 StatusBar.x, $2 SMEngineAPI.h, $3 crashmap-rules.txt, $4 quiet,
   local bad=0
   for f in DMSMJoinOwnPlace DMSMPastEdgeAllowedOn DMSMPastEdgeRemove DMSMPastEdgeHeld DMSMPastEdgeResizeBegan DMSMPastEdgeKeepIn DMSMPastEdgeDeskOn DMSMPastEdgeHeldAt DMSMPastEdgeDragBegin \
            DMSMPastEdgeDragKept DMSMPastEdgeDropped DMSMPastEdgeBefore16 DMSMPastEdgeAfter16 DMSMPastEdgeKeep DMSMPastEdgeCardCenter DMSMPastEdgeOut DMSMPastEdgeSame \
-           DMSMPastEdgeTurnedAway DMSMPastEdgeFiniteRect DMSMPastEdgeSameCard DMSMPastEdgeResized; do
+           DMSMPastEdgeTurnedAway DMSMPastEdgeFiniteRect DMSMPastEdgeSameCard DMSMPastEdgeResized DMSMPastEdgeLaidOut DMSMPastEdgeGridFirst DMSMPastEdgeLaid DMSMPastEdgeGridNote \
+           DMSMPastEdgeSet DMSMWindowDragLive DMSMAppleDragNote DMSMAppleDragPass17 DMSMAppleDragBegins; do
     [ "$(python3 -I -c 'import re, sys
 for l in open(sys.argv[1]):
     p = l.split()
@@ -209,6 +232,23 @@ if [ -z "$SPE_SB_X$SPE_H" ]; then
   mtf "a resized window followed with its held sides moved" H 's/    return \(\(dragged & kDMSMPastEdgeLeft\) \|\| /    return 1 || ((dragged \& kDMSMPastEdgeLeft) || /'
   mtf "a resize followed on any card (no record's)" H 's/    return fabs\(CGRectGetMinX\(start\) - \(rc.x - rs.width \/ 2.0\)\) < 3.0/    return 1 || fabs(CGRectGetMinX(start) - (rc.x - rs.width \/ 2.0)) < 3.0/'
   mtf "the resize's begin not told (the gesture hook)" A 's/^            DMSMPastEdgeResizeBegan\(\(sd.left[^\n]*\n//m'
+  mtf "#20: the record keeps the size asked (1.8.8.4's)" X 's/^    size = DMSMPastEdgeLaid\(size, S\);[^\n]*\n//m'
+  mtf "#20: a lookup by the size asked (our requests and the join)" X 's/^    s = DMSMPastEdgeLaid\(s, scr\);[^\n]*\n//m'
+  mtf "#20: our request keeps the top of the size asked" X 's/^    pts = DMSMPastEdgeLaid\(pts, scr\);[^\n]*\n//m'
+  mtf "#20: the laid-out size never raised (the rule)" H 's/if \(isfinite\(first.height\) && first.height > s.height\) s.height = first.height;//'
+  mtf "#20: the grid's heights not noted" X 's/^    DMSMPastEdgeGridNote\(cb.size, 1, l\);[^\n]*\n//m'
+  mtf "#20: the menu bar's retop compares by the size asked" X 's/CGSize s0 = DMSMPastEdgeLaid\(CGSizeMake\(was.size.width, was.size.height - kSMBarH\), scr\), s1 = DMSMPastEdgeLaid\(CGSizeMake\(now.size.width, now.size.height - kSMBarH\), scr\);/CGSize s0 = CGSizeMake(was.size.width, was.size.height - kSMBarH), s1 = CGSizeMake(now.size.width, now.size.height - kSMBarH);/'
+  mtf "#20: one size list for every screen" X 's/NSValue \*v = gSMGridFirstBySize\[NSStringFromCGSize\(scr\)\];/NSValue *v = gSMGridFirstBySize.allValues.firstObject;/'
+  mtf "B114: Stage Manager's own drag not noted in iPadOS 16's pass (the code before)" X 's/^        if \(dragged && \[it isEqual:dragged\]\) \(void\)DMSMAppleDragNote\([^\n]*\n//m'
+  mtf "B114: 16's passes not naming their dragging item" X 's/gSMDragItem16 = d;/gSMDragItem16 = nil;/g'
+  mtf "B114: the dragged window's place recorded without the rule (its top over the menu bar)" X 's/CGPoint k = DMSMPastEdgeFiniteRect\(u\) \? DMSMPastEdgeCardCenter\(\*c, laid, u, kSMBarH\) : \*c;/CGPoint k = *c;/'
+  mtf "B114: any drag taken for Stage Manager's own window drag" X 's/    if \(!c \|\| !gSMGestureTxs.count\) return NO;/    return YES;/'
+  mtf "B114: a window dragged back inside keeps its record" X 's/if \(r\) \{ DMSMPastEdgeRemove\(key\); DMLog/if (0) { DMSMPastEdgeRemove(key); DMLog/'
+  mtf "B114: our full screen noted (taken for past the bottom)" X 's/^    if \(s.width >= scr.width - 1.0 && s.height >= scr.height - 1.0\) return NO;[^\n]*\n//m'
+  mtf "B114: a completed drag still counted" X 's/        if \(DMSMGTGetter\(t, done, .B.\) && \(\(BOOL \(\*\)\(id, SEL\)\)objc_msgSend\)\(t, done\)\) continue;[^\n]*\n//'
+  mtf "B114, 17: another window's item taken for the dragged one" X 's/return \[k isEqualToString:gSMAppleDragKey\] && DMSMAppleDragNote/return k \&\& DMSMAppleDragNote/'
+  mtf "B114, 17: the hook hands the pass no dragged question" X 's/^    pass.dragged = DMSMAppleDragPass17;[^\n]*\n//m'
+  mtf "B114, 17: the pass does not ask it (SMEngineAPI.h)" E 's/^        if \(pass->dragged && [^\n]*\n//m'
   mtf "the crash map: the header out of the engine's file rule" C 's/\^\(SMEngineAPI\|SMFit\|SMPastEdge\|/^(SMEngineAPI|SMFit|/'
 fi
 exit $rc

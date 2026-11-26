@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = MacStatusBarPrefs
 
-MacStatusBarPrefs_FILES = MSBRootListController.m MSBGoAppsController.m MSBAcknowledgementsController.m MSBWallpaperController.m MSBAppSizesController.m   # (MSBAppSizesController.m, 1.8.8: App Window Sizes; AltList is looked up at run time, no framework here)
+MacStatusBarPrefs_FILES = MSBRootListController.m MSBGoAppsController.m MSBAcknowledgementsController.m MSBWallpaperController.m MSBAppSizesController.m MSBMacLockScreenController.m   # (MSBAppSizesController.m, 1.8.8: App Window Sizes; AltList is looked up at run time, no framework here)
 MacStatusBarPrefs_FRAMEWORKS = UIKit PhotosUI ImageIO UniformTypeIdentifiers   # (PhotosUI, ImageIO, UniformTypeIdentifiers: Desktop Picture's gallery and its pickers, MSBWallpaperController.m)
 MacStatusBarPrefs_PRIVATE_FRAMEWORKS = Preferences
 MacStatusBarPrefs_INSTALL_PATH = /Library/PreferenceBundles

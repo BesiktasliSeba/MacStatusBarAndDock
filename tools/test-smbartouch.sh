@@ -16,7 +16,11 @@ fn() { awk -v s="$2" 'index($0, s) == 1 && !f {f=1; print; if ($0 !~ /\{ *(\/\/.
   fn "$X" 'static BOOL DMSMTouchOnMenuBar(UITouch *t) {'
   fn "$X" 'static BOOL DMSMIsWindowDrag(id manager, UIGestureRecognizer *g) {'
   fn "$X" 'static BOOL DMSMWindowDragLeavesTouch(id manager, UIGestureRecognizer *g, UITouch *t) {'
+  fn "$X" 'static BOOL DMSMWindowDragLive(void) {'   # (1.8.9, B114: Stage Manager's own drag, its window noted as it begins)
+  fn "$X" 'static void DMSMAppleDragBegins(CGPoint p, UIScreen *screen) {'
   fn "$X" 'static BOOL DMSMUnpinBegin(id self, SEL _cmd, id g) {'
+  fn "$X" 'static DMSMTitleBar *DMSMTitleBarAt(CGPoint p, UIScreen *screen, UITouch *t) {'   # (B114: the front bar at a point)
+  fn "$X" 'static BOOL DMSMTitleBarDragTouch(id manager, UIGestureRecognizer *g, UITouch *t) {'
 } > "$W/smbartouch-gen.h"
 clang -fobjc-arc -Wall -Wno-unused-function -Wno-unused-variable -I"$W" -framework Foundation -framework CoreGraphics -o "$W/t" test-smbartouch.m
 fails=0
@@ -39,5 +43,9 @@ check "  ... and \"our menu is open\" is one question, asked for the gesture's o
   "fn $X 'static BOOL DMSMOurMenuOpenOn(UIScreen *screen) {' | grep -qF 'if (gMenuWindow && !gMenuWindow.hidden && gOverlay && (gMenuWindow.screen ?: main) == screen) return YES;' \
    && fn $X 'static BOOL DMSMOurMenuOpenOn(UIScreen *screen) {' | grep -qF 'for (UIWindow *w in gExtMenuWindows) if (!w.hidden && (w.screen ?: main) == screen) return YES;' \
    && ! grep -q 'DMSMOurMenuOpen()' $X && [ \"\$(grep -c 'DMSMOurMenuOpenOn(DMSMGestureScreen(g))' $X)\" = 3 ] && grep -qF 'DMSMOurMenuOpenOn(DMSMTouchScreen(t))' $X"
+check "B114: the window drag's begin question notes the window it drags after Apple's yes (our refusals before it)" \
+  "fn $X 'static BOOL DMSMUnpinBegin(id self, SEL _cmd, id g) {' | awk '/start.x <= 20.0/{a=NR} /DMSMScreenPointOnMenuBar\(start, scr\)/{b=NR} /^    BOOL r = o_SMUnpinBegin\(self, _cmd, g\);$/{c=NR} /^    if \(r\) DMSMAppleDragBegins\(start, scr\);/{d=NR} /^    return r;$/{e=NR} END{exit !(a && b > a && c > b && d == c + 1 && e == d + 1)}'"
+check "B114: the title bar's drag gate asks for the bar the touch is on (the front one)" \
+  "fn $X 'static BOOL DMSMTitleBarDragTouch(id manager, UIGestureRecognizer *g, UITouch *t) {' | grep -qF 'DMSMTitleBar *bar = DMSMTitleBarAt(p, screen, t);'"
 check "no em dashes in the new files" "! grep -n \$'\\xe2\\x80\\x94' test-smbartouch.m test-smbartouch.sh"
 exit $fails

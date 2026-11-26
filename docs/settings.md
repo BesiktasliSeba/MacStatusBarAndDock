@@ -55,7 +55,23 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Activities | Turns Now Playing and Calls off one by one, and Timers on iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, where timers show. | All on |
 | Hide Status Bar on Lock Screen | No status bar on the Lock Screen, and no Control Center line at its top right. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
+| Mac Lock Screen | Opens the Mac Lock Screen page (below). The row shows whether it's on. | Off |
 | Acknowledgements | The work this tweak builds on, with each license: KeyPilot by wanghuangjie, the base of Custom Shortcuts. | |
+
+### Mac Lock Screen
+
+The page under the Lock Screen rows of Settings > Status Bar. With Mac Lock Screen on, the Lock Screen looks like a Mac's. Each part can go back to iPadOS's own, and your notifications stay where iPadOS puts them. If another tweak already changes a part of the Lock Screen, such as its clock, Mac Lock Screen leaves that part to the other tweak.
+
+| Setting | What it does | New install |
+|---|---|---|
+| Mac Lock Screen | Turns the Mac Lock Screen on. While it's off, the other rows are greyed out. | Off |
+| Clock Style | Mac: the date above a large time, like on a Mac. iPadOS: iPadOS's own clock, on iPadOS 17 and 18 the one you set for your Lock Screen. None: no clock. | Mac |
+| Background | Wallpaper: your Lock Screen wallpaper as iPadOS shows it. Blurred Wallpaper, on iPadOS 15 and 16: your wallpaper blurred, as on a Mac. Desktop Picture, while one is set in Settings > Desktop: that picture, blurred. | Blurred Wallpaper on iPadOS 15 and 16, Wallpaper on 17 and 18 |
+| Mac-Style Cards | Notifications on the Lock Screen get the Mac's card look, in iPadOS's own places. | On |
+| Wi-Fi and Battery | Wi-Fi and battery icons at the top right, as on a Mac, in place of the Lock Screen's own status icons. | On |
+| Picture and Name | Your picture and name at the bottom, like a Mac's login, with iPadOS's unlock hint under them when the Lock Screen shows one. They show to anyone who wakes the iPad. | On |
+| Picture | Your initials in a circle. | Initials |
+| Name | The name under the picture. Left empty, it comes from the iPad's name. | The iPad's name |
 
 ## Settings > Desktop
 
@@ -190,6 +206,7 @@ On iPadOS 15 to 17, Notifications and Sounds share one row, Notifications & Soun
 |---|---|---|
 | Pointer Style | Mac: the Mac arrow and I-beam, with Pointer Animations in Accessibility turned off while it is on (your own setting comes back with the iPadOS pointer, and if you turn them back on, they stay on). iPadOS: Apple's round pointer. The Mac pointer follows Apple's Pointer Size. When the Mac pointer isn't shown, a note under this row says why and what to do. | Mac |
 | Restart Pointer | Shown with that note when the Mac pointer isn't running in iPadOS's pointer, or couldn't start there: restarts iPadOS's pointer, with no respring, so the Mac pointer can load. | |
+| Mac Resize Pointers | Shown with Pointer Style Mac: macOS's resize pointers at the resize corners of Aerial, Zetsu and MilkyWay4 windows, and on iPadOS 18 at the edges and corners of Stage Manager windows, instead of iPadOS's grey circle with arrows. A change applies at once. | iPadOS 18: On. 15 to 17: Off |
 | Hide in Virtual Mac | Hides the Mac pointer in the VirtualMac app, which draws its own. Shown only on iPads that can run virtual machines (M1 and M2 iPads up to iPadOS 16.3.1). | On |
 | Use Pointer Control Style | The Mac pointer takes Color, Border Width and Increase Contrast from Pointer Control. Off: the classic black and white pointer. | Off |
 | Block Pointer Pull-Down | Stops the pointer at the top edge from pulling down the Lock Screen. | On |

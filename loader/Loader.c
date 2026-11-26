@@ -64,6 +64,7 @@ static const Payload kPayloads[] = {
     { "MacHomeBar", kSpringBoard },   // (SpringBoard's home pill only: its %ctor returns at once anywhere else)
     { "MacIconLabels", kSpringBoard },
     { "MacLargeTitles", kUIKit },
+    { "MacLockScreen", kSpringBoard },   // (1.8.9 F49: off by default; with its switch off its %ctor installs no hook)
     { "MacLockStatusBar", kSpringBoard },
     { "MacPageDots", kSpringBoard },
     { "MacPointer", kPointerUID },

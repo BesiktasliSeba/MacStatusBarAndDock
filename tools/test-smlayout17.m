@@ -180,6 +180,18 @@ static BOOL TKeptRule(CGPoint c, CGSize s, CGSize cont, CGPoint *keep) {
     if (keep) *keep = DMSMPastEdgeCardCenter(c, s, gRuleDesk, 24.0);
     return YES;
 }
+// (1.8.9, B114) the hook's question for the window under Stage Manager's own drag (StatusBar.x DMSMAppleDragPass17): gDragItem is that window's item;
+// past the right edge it is held where the finger has it -- recorded, so the callback then keeps it -- and its place handed back moved by gDragMove
+// (the rule's top under the menu bar); it counts its asks and notes which items were asked before the callback
+static id gDragItem; static int gDragAsked = 0, gDragBeforeKept = 0; static CGPoint gDragMove;
+static BOOL TDragged(id item, CGPoint *p, CGSize z, CGSize cont) {
+    gDragAsked++;
+    if (gKeptAsked == 0) gDragBeforeKept++;
+    if (item != gDragItem || p->x + z.width / 2.0 <= cont.width) return NO;
+    *p = CGPointMake(p->x + gDragMove.x, p->y + gDragMove.y);
+    gKeptAt[gKeptN] = *p; gKeptSize[gKeptN] = z; gKeptN++;
+    return YES;
+}
 static SBContinuousExposeAutoLayoutItem *Item(CGFloat x, CGFloat y, CGFloat w, CGFloat h, BOOL def) {
     SBContinuousExposeAutoLayoutItem *it = [SBContinuousExposeAutoLayoutItem new]; it.position = CGPointMake(x, y); it.size = CGSizeMake(w, h); it.inDefaultPosition = def; return it;
 }
@@ -421,6 +433,29 @@ int main(void) {
             Check(@"past edge: a window not recorded is kept inside the stage area as before (its bottom on the area's)", fabs(Pos(s10, 2).x - 600) < 0.5 && fabs(Pos(s10, 2).y - (CGRectGetMaxY(ours) - 150)) < 0.5, P(Pos(s10, 2)));
             Check(@"past edge: ... and one past the left edge that is not recorded comes back inside (its left at the screen's edge)", fabs(Pos(s10, 3).x - 200) < 0.5 && fabs(Pos(s10, 3).y - 300) < 0.5, P(Pos(s10, 3)));
             Check(@"past edge: the callback asked with each window's place and size and the container's size; two kept, four moved", gKeptAsked == 4 && gKeptCont.width == 1194 && gKeptCont.height == 834 && ps.keptPast == 2 && mv == 4, [NSString stringWithFormat:@"asked %d kept %d moved %d", gKeptAsked, ps.keptPast, mv]);
+        }
+        {   // (1.8.9, B114) the window under Stage Manager's own drag, past the right edge where the finger has it (17.5.1: clamped at the edge for the
+            // whole drag): asked first, kept where the question hands it back; the others as before; no question handed over: as before
+            SBContinuousExposeAutoLayoutSpace *s10d = [SBContinuousExposeAutoLayoutSpace new];
+            s10d.items = @[Item(1005, 400, 400, 300, NO), Item(600, 500, 400, 300, NO), Item(597, 417, 1194, 834, NO)];
+            gKeptN = 0; gKeptAsked = 0; gDragAsked = 0; gDragBeforeKept = 0; gDragItem = s10d.items[0]; gDragMove = CGPointMake(0, 12);
+            DMSM17Pass ps = DMSM17PassBegin(s10d, YES, cont);
+            Check(@"B114: the pass begins with no dragged question", ps.dragged == NULL, @"");
+            ps.kept = TKept; ps.dragged = TDragged;
+            CGRect a = ApplePass176(s10d, cont, pad, ours);
+            DMSM17PassEnd(&ps, a);
+            Check(@"B114: the window under Stage Manager's own drag past the right edge: kept where the question hands its place back (the finger's, its top held)",
+                  fabs(Pos(s10d, 0).x - 1005) < 0.5 && fabs(Pos(s10d, 0).y - 412) < 0.5 && ps.keptPast == 1, [NSString stringWithFormat:@"%@ kept %d", P(Pos(s10d, 0)), ps.keptPast]);
+            Check(@"B114: asked for each window but the full-screen one, before the callback; the other window as before",
+                  gDragAsked == 2 && gDragBeforeKept == 1 && fabs(Pos(s10d, 1).x - 600) < 0.5, [NSString stringWithFormat:@"asked %d first %d %@", gDragAsked, gDragBeforeKept, P(Pos(s10d, 1))]);
+            SBContinuousExposeAutoLayoutSpace *s10e = [SBContinuousExposeAutoLayoutSpace new]; s10e.items = @[Item(1005, 400, 400, 300, NO)];
+            gKeptN = 0; gKeptAsked = 0; gDragAsked = 0;
+            DMSM17Pass pe = DMSM17PassBegin(s10e, YES, cont);
+            pe.kept = TKept;
+            CGRect ae = ApplePass176(s10e, cont, pad, ours);
+            DMSM17PassEnd(&pe, ae);
+            Check(@"B114: no dragged question handed over (the code before): clamped into the stage area as before", Pos(s10e, 0).x + 200 <= CGRectGetMaxX(ours) + 0.5 && gDragAsked == 0, P(Pos(s10e, 0)));
+            gDragItem = nil; gDragMove = CGPointZero; gKeptN = 0;
         }
         {   // its top above the stage area (under the menu bar): never kept there, clamped as any other; a full-screen window is not asked
             SBContinuousExposeAutoLayoutSpace *s11 = [SBContinuousExposeAutoLayoutSpace new]; s11.items = @[Item(-100, 230, 500, 400, NO), Item(597, 417, 1194, 834, NO)];

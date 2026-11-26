@@ -197,7 +197,8 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 ### Also included
 
-- A Mac pointer, with an I-beam over text
+- A Mac pointer, with an I-beam over text and macOS's resize pointers at window edges and corners (on by default on iPadOS 18; on 15 to 17, turn on Mac Resize Pointers in Settings > Pointer)
+- Mac Lock Screen in Settings > Status Bar, off by default: a Mac clock, your picture and name above the unlock hint, Mac-style cards, Wi-Fi and battery at the top right and, on iPadOS 15 and 16, a blurred wallpaper. Each part is optional.
 - Mac-style notification banners, or iPadOS's or Destra's with Banner Style, and a mute icon
 - A Go menu with the apps you choose, and an auto-hiding menu bar
 - Home Screen options: page dots, app names, the Home Bar, and whether a swipe past the last page opens the App Library

@@ -23,6 +23,9 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     [ "$1" = "purge" ] && rm -rf /var/jb/var/lib/macstatusbaranddock
     # (1.8.8.1: the sticky notes are the user's own writing: kept when the package is removed, deleted only on purge -- statusbar/DesktopNotes.h)
     [ "$1" = "purge" ] && rm -rf "/var/mobile/Library/Application Support/MacStatusBarAndDock"
+    # Mac Lock Screen (1.8.9, F49): its blurred pictures and their keys, the picture copy (the user's photo), its state file for Settings
+    rm -f "$P/MacStatusBarAndDock-LockBackdrop-L.png" "$P/MacStatusBarAndDock-LockBackdrop-P.png" "$P/MacStatusBarAndDock-LockBackdrop-L.key" "$P/MacStatusBarAndDock-LockBackdrop-P.key"
+    rm -f "$P/MacStatusBarAndDock-LockPicture.png" "$P/MacStatusBarAndDock-LockParts.plist"
     rm -f "$P"/MacStatusBarAndDock-Diag-*.txt   # (the diagnostic records, common/Diag.h MSBD_DIAG_NAMES: every one, also those added later)
     rm -f /var/mobile/Library/ControlCenter/MacStatusBarAndDock-ControlsIconState.plist /var/mobile/Library/ControlCenter/MacStatusBarAndDock-ControlsDesiredIconState.plist   # (18: the Mac panel's own layout of tiles, common/CC18MacLayout.h; iPadOS's own was never touched)
     rm -f "$P/MacStatusBarAndDock-CCTile.plist" "$P/MacStatusBarAndDock-CCTile-SSH.plist"   # (18: where RAM & CPU's and SSH's tiles were in Control Center, common/CCTileKeep.h -- a reinstall starts afresh; the prerm's helper took both controls out of the 15-17 lists)

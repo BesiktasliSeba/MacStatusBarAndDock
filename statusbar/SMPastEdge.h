@@ -2,7 +2,8 @@
 // DMA5DragFollow, 1.8.8.3), Zetsu's and MilkyWay4's windows can (1.8.8.3, GitHub #19: "like Aerial and Zetsu").
 // Plain C on CoreGraphics, so the Mac tests (tools/test-smpastedge.sh, test-smlayout17.sh) run this very code; StatusBar.x calls it from the title
 // bar's drag (-[DMSMTitleBar dm_pan:]), from our requests (DMSMAttrsFitScreen), from Stage Manager's layout passes (iPadOS 16: around the stage-area
-// constraint; 17 and 18: DMSM17PassEnd, SMEngineAPI.h) and from a resize by hand (SMResizeAnchor.h).
+// constraint; 17 and 18: DMSM17PassEnd, SMEngineAPI.h), from a resize by hand (SMResizeAnchor.h) and, 1.8.9, from Stage Manager's own window drag
+// (the window's top strip: StatusBar.x DMSMAppleDragNote -- where the finger has it, by the same rule, recorded past an edge as a drop is).
 //  - How far: as with the other engines (StatusBar.x DMZetsuBarPan, MilkyWay4's -dragged:). The window follows the finger or the pointer, so the point
 //    of the title bar they hold stays on the screen; its top never goes above the desktop's top (under the menu bar), as every engine holds it; nothing
 //    else holds it: left, right and down it goes as far as the finger takes it, its title bar behind the Dock too.
@@ -11,6 +12,8 @@
 //  - Which windows: only one the user let go past an edge, at the very place it was let go, and as a resize by hand then changes it (StatusBar.x keeps
 //    a record of its centre and size in points on a screen of that size). Every other place -- a new window, a layout, Fill, a turn, a window Stage
 //    Manager brings back by itself -- is fitted inside the desktop as before.
+//  - Which size (1.8.9, GitHub #20): a window is known by the size Stage Manager lays it out at (DMSMPastEdgeLaidOut), the size its layout passes
+//    see, in the record and in every lookup -- also where our requests and a window's way back read the size its attributes ask.
 #ifndef MSBD_SM_PAST_EDGE_H
 #define MSBD_SM_PAST_EDGE_H
 #include <CoreGraphics/CoreGraphics.h>
@@ -39,6 +42,21 @@ static inline CGPoint DMSMPastEdgeCardCenter(CGPoint c, CGSize s, CGRect desk, C
 static inline int DMSMPastEdgeOut(CGRect w, CGRect screen) {
     if (!DMSMPastEdgeFiniteRect(w) || !DMSMPastEdgeFiniteRect(screen)) return 0;
     return CGRectGetMinX(w) < CGRectGetMinX(screen) - 0.5 || CGRectGetMaxX(w) > CGRectGetMaxX(screen) + 0.5 || CGRectGetMaxY(w) > CGRectGetMaxY(screen) + 0.5;
+}
+
+// The size Stage Manager lays a window out at, for the size `asked` (its attributes' size, or one laid out already), on a screen whose size grid starts
+// at `first` (the lists' first width and height, StatusBar.x DMSMPastEdgeGridFirst; 0: not read yet): never smaller than them. The grid's rounding
+// (our -_nearestGridSizeForSize: hook on iPadOS 16, the flexible grid on 17 and 18) raises a smaller size to them, while the attributes keep the size
+// asked. Apple's own height list starts at 480 pt on 17.6.1 (read there; plans/ios17-port-stage-manager.md Fix 3) and, by our reading, on a native
+// iPadOS 16 iPad too -- not seen on a device: every test iPad of ours runs TrollPad, whose lists start lower, and 17+ lists start at 300. There App
+// Window Sizes' Small in landscape on an iPad Air (a 396 pt card) is laid out 480 pt tall: recorded at 396, the layout pass saw no record at 480 and
+// fitted the window inside (GitHub #20, the likely case: a corner resize, which writes the laid-out size, let the user's windows go past the edge).
+// A size at or above `first`, or a `first` not a number: as it is.
+static inline CGSize DMSMPastEdgeLaidOut(CGSize asked, CGSize first) {
+    CGSize s = asked;
+    if (isfinite(first.width) && first.width > s.width) s.width = first.width;
+    if (isfinite(first.height) && first.height > s.height) s.height = first.height;
+    return s;
 }
 
 // A window at a recorded place: its centre and size within a point of the record's, on a screen of the record's size.

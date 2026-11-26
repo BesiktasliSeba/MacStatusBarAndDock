@@ -30,16 +30,23 @@ SM_IFACE='@interface DMSMTitleBar : UIView <UIGestureRecognizerDelegate>'
 SM_DECL=('static const CGFloat kSMBarH = ' 'static CFTimeInterval gSMDragUntil = 0;' 'static NSMutableSet<NSString *> *gSMBehindDock;'
          'static NSMutableDictionary<NSString *, NSNumber *> *gSMDockHeightBySize;')
 SM_LINES=('static NSMutableDictionary<NSString *, NSArray<NSValue *> *> *gSMPastEdge;' 'static NSMutableArray<NSString *> *gSMPastEdgeOrder;'
-          'static NSString *gSMPastEdgeResizeKey; static CGRect gSMPastEdgeResizeFrom;' 'static CGRect gSMPastEdgeDesk; static CGSize gSMPastEdgeScreen;')
-SM_FN=('static BOOL DMSMPastEdgeAllowedOn(CGSize scr) {' 'static void DMSMPastEdgeRemove(NSString *key) {' 'static BOOL DMSMPastEdgeHeld(CGPoint c, CGSize s, CGSize scr) {'
+          'static NSString *gSMPastEdgeResizeKey; static CGRect gSMPastEdgeResizeFrom;' 'static CGRect gSMPastEdgeDesk; static CGSize gSMPastEdgeScreen;'
+          'static NSMutableDictionary<NSString *, NSValue *> *gSMGridFirstBySize;'   # (1.8.9: the size grid's first sizes, test-smpastedge.sh's list)
+          'static id gSMDragItem16;' 'static NSString *gSMAppleDragKey;' 'static CFTimeInterval gSMAppleDragToldAt;')   # (1.8.9, B114: Stage Manager's own drag)
+SM_FN=('static CGSize DMSMPastEdgeGridFirst(CGSize scr) {' 'static CGSize DMSMPastEdgeLaid(CGSize s, CGSize scr) {' 'static void DMSMPastEdgeGridNote(CGSize container, int axis, id list) {'
+       'static BOOL DMSMPastEdgeAllowedOn(CGSize scr) {' 'static void DMSMPastEdgeRemove(NSString *key) {' 'static BOOL DMSMPastEdgeHeld(CGPoint c, CGSize s, CGSize scr) {'
        'static void DMSMPastEdgeResizeBegan(unsigned dragged, CGRect start) {'
        'static BOOL DMSMPastEdgeKeepIn(CGPoint *cp, CGSize pts, CGSize scr, CGRect u) {' 'static CGRect DMSMPastEdgeDeskOn(UIScreen *s, CGSize size) {'
        'static BOOL DMSMPastEdgeHeldAt(CGPoint c, CGSize s, CGSize scr, CGPoint *keep) {' 'static void DMSMPastEdgeDragBegin(UIView *card) {'
        'static CGPoint DMSMPastEdgeDragKept(UIView *card, CGPoint t) {'
+       'static void DMSMPastEdgeSet(NSString *key, CGPoint centre, CGSize size, CGSize S, BOOL prune) {'
        'static void DMSMPastEdgeDropped(NSString *key, UIScreen *scn, CGRect droppedOnScreen, BOOL snapped, CGPoint at, CGPoint plain) {'
+       'static BOOL DMSMWindowDragLive(void) {' 'static BOOL DMSMAppleDragNote(NSString *key, CGPoint *c, CGSize s, CGSize scr) {'
+       'static BOOL DMSMAppleDragPass17(id item, CGPoint *p, CGSize z, CGSize container) {'
        'static CGRect DMSMCardDesk(CGRect u, CGSize scr, BOOL behindDock) {' 'static void DMSMJoinOwnPlace(NSString *key, CGSize *pts, CGPoint *cp, CGSize scr, CGRect u) {'
        'static id DMSMAttrsFitScreen(id attrs, id identity, BOOL behindDock, NSString *bundle) {'
-       'static NSArray<NSArray *> *DMSMPastEdgeBefore16(id m, CGRect area) {' 'static void DMSMPastEdgeAfter16(id m, NSArray<NSArray *> *held) {')
+       'static NSArray<NSArray *> *DMSMPastEdgeBefore16(id m, CGRect area) {' 'static void DMSMPastEdgeAfter16(id m, NSArray<NSArray *> *held) {'
+       'static void DMSMPastEdgeMoved(CGRect was, CGRect now, CGSize scr) {')
 SM_PAN='- (void)dm_pan:(UIPanGestureRecognizer *)g {'
 SM_TOUCH='- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)t {'   # (the bar's touch filter: where the finger went down, 1.8.8.3)
 # (Aerial: as test-aerialpastedge.sh cuts it)

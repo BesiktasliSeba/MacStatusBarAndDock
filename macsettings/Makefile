@@ -17,7 +17,8 @@ include $(THEOS)/makefiles/common.mk
 # MacFolderMenu: adds one row per contained app to a Home Screen FOLDER icon's Haptic Touch menu, tapping a row opens that app.
 # MacCCGrabber: hides the small grabber/handle line in the top-right corner of Control Center — replicates Lynx's "hideCCGrabber".
 # MacAddToFolder: "Add to Folder" in an app icon's Haptic Touch menu (1.7.2): the app moves into a Home Screen folder, or a new one.
-TWEAK_NAME = MacSettings MacSettingsBadge MacLargeTitles MacHomeBar MacPageDots MacIconLabels MacEthernetFix MacAppSizeMenu MacLockStatusBar MacFolderMenu MacCCGrabber MacAddToFolder
+# MacLockScreen: Mac Lock Screen (1.8.9, F49): a light, part-by-part Mac style over the Lock Screen, off by default (MacLockScreen.x).
+TWEAK_NAME = MacSettings MacSettingsBadge MacLargeTitles MacHomeBar MacPageDots MacIconLabels MacEthernetFix MacAppSizeMenu MacLockStatusBar MacFolderMenu MacCCGrabber MacAddToFolder MacLockScreen
 
 MacSettings_FILES = MacSettings.x PointerSettings.x KeyboardSettings.x CustomShortcuts.x AutoLock.x NativeRows.x SidebarSearch.x TweakSearch.x AppleGroups18.x SidebarGroups.x BatteryHealth.x BatteryUse.x BatteryHealthLink.x
 ifneq ($(FINALPACKAGE),1)
@@ -62,6 +63,10 @@ MacCCGrabber_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacAddToFolder_FILES = AddToFolder.x
 MacAddToFolder_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
+
+MacLockScreen_FILES = MacLockScreen.x
+MacLockScreen_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
+MacLockScreen_FRAMEWORKS = UIKit QuartzCore CoreGraphics
 
 SUBPROJECTS += sshtoggled
 

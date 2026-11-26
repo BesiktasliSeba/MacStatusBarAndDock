@@ -43,7 +43,7 @@ static inline BOOL MSBDBlameIsOurName(NSString *name) {
     dispatch_once(&once, ^{
         ours = [NSSet setWithArray:@[@"MacStatusBar", @"MacDock", @"MacCrashBlame", @"BrightnessKeyTweak", @"DockMagnification", @"DockMagnificationSettings",
             @"ForceQuitMenu", @"GraveEscapeTweak", @"MacAddToFolder", @"MacAppBridge", @"MacAppSizeMenu", @"MacCCGrabber", @"MacCrashNotice", @"MacEthernetFix", @"MacFolderMenu", @"MacHomeBar",
-            @"MacIconLabels", @"MacLargeTitles", @"MacLockStatusBar", @"MacPageDots", @"MacPointer", @"MacSettings", @"MacSettingsBadge", @"MacStatusBarCore",
+            @"MacIconLabels", @"MacLargeTitles", @"MacLockScreen", @"MacLockStatusBar", @"MacPageDots", @"MacPointer", @"MacSettings", @"MacSettingsBadge", @"MacStatusBarCore",
             @"MacStatusBarSettings", @"MixAudio", @"TabMuteTweak", @"VolumeGlobeTweak"]];
     });
     if ([name hasSuffix:@".dylib"]) name = [name substringToIndex:name.length - 6];

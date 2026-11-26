@@ -9,6 +9,12 @@
 //    Status Bar) publishes with the settings as Darwin notification states (pointeruid is sandboxed: no files, no preferences of ours).
 //  - Settings > Pointer: Pointer Style (Mac/iPadOS) and Hide in Virtual Mac; the size is the system's own Pointer Size.
 //  - Stands aside while another tweak draws its own pointer in pointeruid (two pointers would fight): MPAsideLook, MPAside.h.
+//  - macOS's resize pointers (1.8.9, F51; common/MacResizeCursor.h): where SpringBoard says a window can be resized and iPadOS's pointer carries
+//    its resize arrows there, the Mac pointer's layer draws macOS's resize cursor instead of the arrow; a pointer state with arrows around it is
+//    never the text beam (the grey circle with arrows at a window's edge on 18.5, KT 25 Nov). The window engines' grips (Aerial, Zetsu,
+//    MilkyWay4; 1.8.9, F51b): iPadOS has no resize shape there, SpringBoard's fact is its own evidence while it is fresh (its lease and no shape
+//    change since, MSBDResizeGripFresh). Settings > Pointer > Mac Resize Pointers (on by default on iPadOS 18, off on 15-17; MPResizeOn): off,
+//    the pointer looks as in 1.8.8.4 and none of this is read.
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -21,6 +27,7 @@
 #include "MPDisplayGeometry.h"
 #include "../../common/PointerFade.h"   // (1.8.8, D48: the pointer's fade said to SpringBoard -- the traffic lights' hold ends at it)
 #include "MPAside.h"   // (1.8.8.2, GitHub #17: does another library draw the pointer; what the Mac pointer is doing, said: common/MacPointerStatus.h)
+#include "../../common/MacResizeCursor.h"   // (1.8.9, F51: the resize fact, the look, the latch and the glyphs)
 @interface PSPointerShape : NSObject
 - (long long)shapeType; - (CGRect)bounds; - (double)cornerRadius; - (CGPathRef)path;
 @end
@@ -609,12 +616,127 @@ static void MPAsideMaybeLook(void) {
 #if DEBUG
 static int gMPUpdates = 0; static double gMPUpdateMs = 0, gMPUpdateMax = 0; static CFTimeInterval gMPUpdateSince = 0;
 #endif
+// ---- macOS's resize pointers (1.8.9, F51; common/MacResizeCursor.h) ------------------------------------------------------------------------
+// SpringBoard's fact (which resize place is under the pointer) arrives as a Darwin notification state, kept here from its note (MPResizeFollow):
+// nothing is read per pointer update. iPadOS's own pointer state says whether its resize arrows (accessories) are there: recorded per rendering
+// controller in -setPointerState:... BEFORE iPadOS's own update runs (MPUpdate runs inside that update, through -setPointerShape:...), as their
+// number, their angles and the button: MPStateInfo.
+static uint64_t gMPResizeWord = 0;
+static MSBDResizeLatch gMPResizeLatch;   // (a resize drag: the glyph of the press until the button is let go)
+// (1.8.9, F51b: a grip's fact -- when its last word came and iPadOS's shape count then; the shape count goes up at each real change of iPadOS's
+//  pointer shape, the setPointerShape hook)
+static CFTimeInterval gMPResizeGripAt = 0;
+static unsigned long gMPShapeSeq = 0, gMPResizeGripSeq = 0;
+@interface MPStateInfo : NSObject { @public int count, nAngles; double angles[4]; BOOL pressed; uint64_t shownWord; }   // (shownWord: the glyph this controller's pointer shows, as a fact word; 0 none)
+@end
+@implementation MPStateInfo
+@end
+static const void *kMPStateInfoKey = &kMPStateInfoKey, *kMPGlyphKeyKey = &kMPGlyphKeyKey;
+// The state's accessories (an array), its button and an accessory's angle, found once per class (a method answering an object or a BOOL, else
+// the ivar; never a key-value lookup: this runs with every pointer update). NULL / NO where this pointeruid has none of them.
+typedef struct { Class cls; IMP imp; SEL sel; ptrdiff_t ivar; } MPGetter;   // (ivar -1: none)
+static void MPGetterFind(MPGetter *g, Class c, const char *sel, const char *ivarName, char want) {
+    g->cls = c; g->imp = NULL; g->sel = sel_registerName(sel); g->ivar = -1;
+    Method m = c ? class_getInstanceMethod(c, g->sel) : NULL;
+    const char *t = m ? method_getTypeEncoding(m) : NULL;
+    if (t && t[0] == want && method_getNumberOfArguments(m) == 2) { g->imp = method_getImplementation(m); return; }
+    Ivar iv = NULL; for (Class k = c; k && !iv; k = class_getSuperclass(k)) iv = class_getInstanceVariable(k, ivarName);
+    const char *it = iv ? ivar_getTypeEncoding(iv) : NULL;
+    if (it && it[0] == want) g->ivar = ivar_getOffset(iv);
+}
+// (*known: the state has accessories at all -- a getter or the ivar; then nil is none, B0 18.5)
+static NSArray *MPStateAccessories(id state, BOOL *known) {
+    static MPGetter g;
+    *known = NO;
+    if (!state) return nil;
+    if (g.cls != object_getClass(state)) MPGetterFind(&g, object_getClass(state), "accessories", "_accessories", '@');
+    *known = g.imp != NULL || g.ivar >= 0;
+    id a = g.imp ? ((id (*)(id, SEL))g.imp)(state, g.sel) : g.ivar >= 0 ? (__bridge id)*(void *const *)((uint8_t *)(__bridge void *)state + g.ivar) : nil;
+    return [a isKindOfClass:[NSArray class]] ? a : nil;
+}
+static BOOL MPStatePressed(id state) {
+    static MPGetter g;
+    if (!state) return NO;
+    if (g.cls != object_getClass(state)) { MPGetterFind(&g, object_getClass(state), "pressed", "_pressed", 'B'); if (!g.imp && g.ivar < 0) MPGetterFind(&g, object_getClass(state), "isPressed", "_pressed", 'B'); }
+    return g.imp ? ((BOOL (*)(id, SEL))g.imp)(state, g.sel) : g.ivar >= 0 ? *((BOOL *)((uint8_t *)(__bridge void *)state + g.ivar)) : NO;
+}
+static BOOL MPAccessoryAngle(id acc, double *out) {
+    static Class cls; static ptrdiff_t off = -1;
+    if (!acc) return NO;
+    if (object_getClass(acc) != cls) {
+        cls = object_getClass(acc); off = -1;
+        Ivar iv = NULL; for (Class k = cls; k && !iv; k = class_getSuperclass(k)) iv = class_getInstanceVariable(k, "_angle");
+        const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+        if (t && t[0] == 'd') off = ivar_getOffset(iv);
+    }
+    if (off < 0) return NO;
+    *out = *(double *)((uint8_t *)(__bridge void *)acc + off);
+    return YES;
+}
+// (in -setPointerState:..., before iPadOS's update; c: the rendering controller)
+static MPStateInfo *MPRecordState(UIViewController *c, id state) {
+    MPStateInfo *i = objc_getAssociatedObject(c, kMPStateInfoKey);
+    if (!i) { i = [MPStateInfo new]; objc_setAssociatedObject(c, kMPStateInfoKey, i, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    BOOL known = NO;
+    NSArray *acc = MPStateAccessories(state, &known);
+    i->count = known ? (int)acc.count : -1; i->nAngles = 0;   // (-1: this pointeruid's state has no accessories at all)
+    for (NSUInteger k = 0; k < acc.count && i->nAngles < 4; k++) { double a = 0; if (MPAccessoryAngle(acc[k], &a)) i->angles[i->nAngles++] = a; }
+    i->pressed = MPStatePressed(state);
+    return i;
+}
+// Where the state cannot say (no accessories on this version's state at all): the accessories container's shown subviews (no angles), read only
+// with a fact, only as the evidence for a glyph, never to take the beam away (review 1.8.9 F51, finding 2).
+static int MPAccessoryViewsShown(UIViewController *c) {
+    UIView *box = MPIvar(c, "_accessoryContainerView");
+    if (![box isKindOfClass:[UIView class]]) return 0;
+    int n = 0; for (UIView *v in box.subviews) if (!v.hidden && v.alpha > 0.01) n++;
+    return n;
+}
+// Each glyph's path, made once (common/MacResizeCursor.h MSBDResizeGlyphCreate), kept for the run.
+static CGPathRef MPResizeGlyph(MSBDResizeFact f) {
+    static NSMutableDictionary<NSNumber *, id> *made;
+    unsigned key = MSBDResizeGlyphKey(f);
+    if (!key) return NULL;
+    if (!made) made = [NSMutableDictionary dictionary];
+    id p = made[@(key)];
+    if (!p) { CGPathRef np = MSBDResizeGlyphCreate(f); if (!np) return NULL; p = (__bridge_transfer id)np; made[@(key)] = p; }
+    return (__bridge CGPathRef)p;
+}
+// iPadOS's text beam (common/MacResizeCursor.h MSBDPointerBeamShape): the rule read in B0 on 18 (a sized type 4 is iPadOS's resize shape, not
+// text); on 15-17, where a type 4 beam's size was never measured (17.5.1 over Finder's search field, 1.8.8), every type 4 stays the beam as in
+// 1.8.8.4 (review 1.8.9 F51, finding 4) -- there a band shows macOS's resize cursor only with SpringBoard's fact, else iPadOS's own shape as before.
+static BOOL MPBeamRuleFrom18(void) {
+    static int v = -1;
+    if (v < 0) v = [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){18, 0, 0}] ? 1 : 0;
+    return v == 1;
+}
+// Settings > Pointer > Mac Resize Pointers (1.8.9, KT 25 Nov; on by default on iPadOS 18, off on 15-17), said by SpringBoard in the config word
+// (common/MacResizeCursor.h MSBD_RZ_CONFIG_BIT, with Pointer Style Mac). Off: MPUpdate shows 1.8.8.4's look (MSBDPointerLook1884) and nothing of
+// the above is recorded, kept or read; switched off, what was kept goes at once (the drag's latch, every controller's record), so a switch-on
+// starts from nothing. Read at the start and at each "changed" note (SpringBoard posts it with every change of the config word), never per
+// pointer update (the switch's review, finding 4).
+static BOOL gMPResizeOnNow = NO;
+static void MPResizeForget(void) {
+    memset(&gMPResizeLatch, 0, sizeof gMPResizeLatch);
+    UIViewController *main = gMPController;
+    if (main) objc_setAssociatedObject(main, kMPStateInfoKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (PUIDPointerShapeView *v in [gMPShapeViews allObjects]) { UIViewController *c = MPControllerOf(v); if (c) objc_setAssociatedObject(c, kMPStateInfoKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+}
+static void MPResizeRead(void) {
+    BOOL on = (MPState(gMPConfigToken) & MSBD_RZ_CONFIG_BIT) != 0;
+    if (on == gMPResizeOnNow) return;
+    gMPResizeOnNow = on;
+    if (!on) MPResizeForget();
+}
+static BOOL MPResizeOn(void) { return gMPResizeOnNow; }
 // What the pointer shows. The system's pointer shape (PSPointerShape) as seen on 15-17:
 //  - type 1, the round pointer (also while it hovers an icon or our status bar, where the system only lifts or highlights the content): the arrow;
 //  - type 3, a rounded rectangle: a button's or a control's highlight (17.5.1: the Clock tab bar's World Clock, 41 x 182 pt, radius 8; our traffic
 //    lights, 20 x 20 radius 8 -- "the circle at the window edges", KT on 18.5) -- the arrow, as on a Mac; a thin one (4 pt or less) is the text beam
-//    of iPadOS 15/16: the system's beam;
-//  - type 4, the text beam of iPadOS 17 and 18 (17.5.1 over Finder's search field; the only types 18.5 showed: 1, 3, 4): the system's beam;
+//    (15.6.1 and 18.5 over a search field: 3 x 24, radius 1.5, F51's B0): the system's beam;
+//  - type 4, a path: the text beam of iPadOS 17 (17.5.1 over Finder's search field, 1.8.8) when it has no size of its own or is under 6 pt across:
+//    the system's beam; with a size, iPadOS 18.5's shape for a window's resize band (35 x 14 pt along an edge, 25.8 pt square at a corner, its
+//    arrowheads drawn in it; F51's B0): the Mac pointer, macOS's resize cursor there (1.8.9, F51);
 //  - anything else: the arrow (a Mac shows the arrow everywhere but over text).
 // Wherever the arrow shows, nothing of the system's own pointer is drawn: not the round pointer, not a control's highlight, not the accessibility
 // ring (KT, 24 Oct: "a little circle at its tip" -- the round pointer came back for every highlight and beam and morphed out of its circle under the
@@ -629,17 +751,54 @@ static void MPUpdate(PUIDPointerShapeView *view) {
     if (!shape) { @try { shape = [view valueForKey:@"pointerShape"]; } @catch (id e) {} }
     long long type = shape ? shape.shapeType : 1;
     CGRect sb = shape ? shape.bounds : CGRectZero;
-    BOOL thin = !CGRectIsEmpty(sb) && MIN(sb.size.width, sb.size.height) <= 4.0;
-    BOOL systemShape = thin || type == 4;   // (only the text beam: iPadOS 17/18's type 4, 15/16's thin type 3 -- every other style gets the arrow)
     // (Hide in Virtual Mac hides the pointer's root view, MPApplyVisibility; the arrow in the top window is not under it, so it goes too)
     // (1.8.8.2: the same reads in the same order as one line before, kept apart for the word on why the arrow is not shown, MPSayNow)
     BOOL enabled = MPEnabled();
+    // What shows (1.8.9, F51, common/MacResizeCursor.h MSBDPointerLook): iPadOS's text beam only for a beam's shape with no arrows around it --
+    // on 18 a thin shape or a type 4 without a size of its own (MSBDPointerBeamShape): iPadOS 18.5 gives a window's resize band a sized type 4
+    // path shape, which the old rule (any type 4) took for text and left to iPadOS, its grey capsule with arrowheads (KT, 25 Nov); on 15-17 any
+    // type 4 too, as before (MPBeamRuleFrom18); macOS's resize cursor where SpringBoard's fact and iPadOS's own resize shape (or arrows) agree,
+    // or a resize drag holds it; else the arrow. With Mac Resize Pointers off (Settings > Pointer; MPResizeOn): 1.8.8.4's look, nothing else read.
+    UIViewController *ctl = MPControllerOf(view);
+    BOOL rzOn = MPResizeOn();
+    MPStateInfo *si = rzOn && ctl ? objc_getAssociatedObject(ctl, kMPStateInfoKey) : nil;
+    int accessories = si && si->count > 0 ? si->count : 0;   // (the state's own arrows; unknown counts as none for the beam)
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL held = NO;
+    MSBDResizeFact fact = { 0, 0, 0, 0, 0, 0 };
+    int look;
+    if (!rzOn) look = MSBDPointerLook1884(type, sb);   // (off: iPadOS's own shape for its text beam -- a thin shape, any type 4 --, else the arrow)
+    else {
+        BOOL beamShape = MPBeamRuleFrom18() ? MSBDPointerBeamShape(type, sb.size.width, sb.size.height) : (MSBDPointerBeamShape(type, sb.size.width, sb.size.height) || type == 4);
+        held = MSBDResizeLatchHolds(&gMPResizeLatch, now);   // (a drag, or the moment after its button-up until SpringBoard's next word)
+        fact = held ? gMPResizeLatch.fact : MSBDResizeUnpack(gMPResizeWord);
+        BOOL factHere = NO, evidence = NO;
+        if (fact.kind && !held) {   // (no fact: nothing more is read -- the usual case)
+            factHere = (fact.display == 1) == !MPOnOwnDisplay(view);
+            // (F51b: a grip's fact only while fresh -- its lease, and no change of iPadOS's own shape since its last word)
+            if (factHere && fact.source == MSBD_RZ_SRC_GRIP && !MSBDResizeGripFresh(now, gMPResizeGripAt, gMPShapeSeq, gMPResizeGripSeq)) factHere = NO;
+            if (factHere) {
+                BOOL known = si && si->count >= 0;
+                int n = known ? si->count : (!beamShape && ctl ? MPAccessoryViewsShown(ctl) : 0);
+                evidence = MSBDResizeEvidence(fact, type, sb.size.width, sb.size.height, n, known ? si->angles : NULL, known ? si->nAngles : 0);
+            }
+        }
+        look = MSBDPointerLook(beamShape, accessories, factHere, evidence, held);
+    }
+    BOOL systemShape = look == MSBD_PTR_BEAM;   // (only the text beam -- every other style gets the Mac pointer)
     BOOL sysHid = enabled && !systemShape && MPHiddenBySystem(view);
     BOOL vmHid = enabled && !systemShape && !sysHid && MPState(gMPHideToken) == 1;
     BOOL want = enabled && !systemShape && !sysHid && !vmHid;
     MPSayNow(view, enabled, sysHid, vmHid);
     MPAsideMaybeLook();
     CAShapeLayer *a = want ? MPCursorLayer(view) : objc_getAssociatedObject(view, kMPCursorKey);
+    CGPathRef glyph = (want && look == MSBD_PTR_RESIZE) ? MPResizeGlyph(fact) : NULL;
+    CGPathRef wantPath = glyph ?: MPCursorPath();   // (the arrow's layer draws the resize glyph: the same edge, shadow, size and turn)
+    // (which path the layer has, by the glyph's key -- 0 the arrow: Core Animation keeps its own copy of a path, so the pointer never matches,
+    //  review 1.8.9 F51 finding 1)
+    unsigned wantKey = glyph ? MSBDResizeGlyphKey(fact) : 0;
+    unsigned hasKey = a ? [objc_getAssociatedObject(a, kMPGlyphKeyKey) unsignedIntValue] : 0;
+    if (si && enabled && (systemShape || !sysHid)) si->shownWord = glyph && !MSBDResizeLatchGraceOnly(&gMPResizeLatch, now) ? MSBDResizePack(fact) : 0;   // (this display's pointer: what a press there latches -- never the glyph a released drag's grace holds, review F51b finding 3)
     CALayer *host = view.layer;   // (the arrow rides the pointer view itself: its origin is the pointer's position)
     NSArray<UIView *> *natives = MPNativeViews(view);
     NSMutableArray *hid = objc_getAssociatedObject(view, kMPHidNativeKey);
@@ -647,7 +806,7 @@ static void MPUpdate(PUIDPointerShapeView *view) {
     float fadeTarget = gMPAutoHidden ? 0.0f : 1.0f;
     // nothing to change (the usual case: this runs with the pointer's own updates): no transaction at all
     BOOL nativesShown = NO; for (UIView *v in natives) if (!v.layer.hidden) { nativesShown = YES; break; }
-    BOOL settled = want ? (a.superlayer == host && host.sublayers.lastObject == a && !a.hidden && CGAffineTransformEqualToTransform(a.affineTransform, t) && !nativesShown && a.opacity == fadeTarget)
+    BOOL settled = want ? (a.superlayer == host && host.sublayers.lastObject == a && !a.hidden && CGAffineTransformEqualToTransform(a.affineTransform, t) && !nativesShown && a.opacity == fadeTarget && hasKey == wantKey)
                         : ((!a || a.hidden) && !hid.count);
     if (!settled) {
         [CATransaction begin];
@@ -655,6 +814,13 @@ static void MPUpdate(PUIDPointerShapeView *view) {
         if (a && !CGAffineTransformEqualToTransform(a.affineTransform, t)) a.affineTransform = t;   // (kept turned while hidden too -- the iPad turned while the pointer
                                                                                                     //  was on the TV left the hidden arrow at the old angle, 29 Sep)
         if (want) {
+            if (hasKey != wantKey) {   // (the arrow, or one of macOS's resize cursors: the shadow from the same path)
+                a.path = wantPath; a.shadowPath = wantPath;
+                objc_setAssociatedObject(a, kMPGlyphKeyKey, @(wantKey), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+#if DEBUG
+                MPLog([NSString stringWithFormat:@"%.3f resize: %@ (fact kind %u position %u directions %u display %u, arrows %d, latched %d)", CACurrentMediaTime(), glyph ? @"macOS's resize cursor" : @"the arrow", fact.kind, fact.position, fact.directions, fact.display, accessories, gMPResizeLatch.live]);
+#endif
+            }
             if (a.superlayer != host || host.sublayers.lastObject != a) [host addSublayer:a];   // (on top; moved only when it is not -- out of the pointer view when it moves to the box)
             if (a.hidden) a.hidden = NO;
             for (UIView *v in natives) if (!v.layer.hidden) {   // the system's own pointer views hidden exactly while the arrow shows
@@ -693,12 +859,12 @@ static void MPUpdate(PUIDPointerShapeView *view) {
             [CATransaction commit];
         }
     }
-    MPSpecular(MPControllerOf(view), want);
+    MPSpecular(ctl, want);
 #if DEBUG
     double ms = (CACurrentMediaTime() - t0) * 1000.0;
     gMPUpdates++; gMPUpdateMs += ms; if (ms > gMPUpdateMax) gMPUpdateMax = ms;
     if (CACurrentMediaTime() - gMPUpdateSince > 2.0) {
-        if (gMPUpdateSince > 0) MPLog([NSString stringWithFormat:@"%.3f updates: %d in %.1f s, avg %.3f ms, max %.3f ms (shape %lld, arrow %d)", CACurrentMediaTime(), gMPUpdates, CACurrentMediaTime() - gMPUpdateSince, gMPUpdates ? gMPUpdateMs / gMPUpdates : 0, gMPUpdateMax, type, want]);
+        if (gMPUpdateSince > 0) MPLog([NSString stringWithFormat:@"%.3f updates: %d in %.1f s, avg %.3f ms, max %.3f ms (shape %lld, arrow %d, look %d)", CACurrentMediaTime(), gMPUpdates, CACurrentMediaTime() - gMPUpdateSince, gMPUpdates ? gMPUpdateMs / gMPUpdates : 0, gMPUpdateMax, type, want, look]);
         gMPUpdates = 0; gMPUpdateMs = 0; gMPUpdateMax = 0; gMPUpdateSince = CACurrentMediaTime();
     }
 #endif
@@ -748,6 +914,7 @@ static void MPApplyVisibility(void) {
     MPRemember((PUIDPointerShapeView *)self);
     if (before && [before isEqual:shapeObj]) return;   // (the same shape again -- 17 sets it every frame while a control is hovered: nothing to do)
     gMPShapeAt = CACurrentMediaTime();   // (1.8.8.2: a look at another pointer waits until the shape has settled, MSBDMPAsideCanLook)
+    gMPShapeSeq++;   // (1.8.9, F51b: a grip's fact is not trusted past a change of iPadOS's own shape, MSBDResizeGripFresh)
     MPUpdate((PUIDPointerShapeView *)self);
 }
 %end
@@ -781,6 +948,20 @@ static void MPApplyVisibility(void) {
         }
     }
 #endif
+    // (1.8.9, F51: iPadOS's arrows and the button, recorded before iPadOS's own update -- MPUpdate runs inside it; the latch from what shows now.
+    //  Mac Resize Pointers off: nothing recorded, no latch -- 1.8.8.4's update)
+    MPStateInfo *si = MPResizeOn() ? MPRecordState((UIViewController *)self, state) : nil;
+    BOOL wasLive = gMPResizeLatch.live;
+    if (si) {   // (only the display the pointer is on: another display's controller, hidden by iPadOS, never ends a drag on this one)
+        PUIDPointerShapeView *ownNow = MPIvar(self, "_pointerShapeView");
+        if (![ownNow isKindOfClass:[UIView class]] || !MPHiddenBySystem(ownNow))
+            MSBDResizeLatchStepAt(&gMPResizeLatch, si->pressed, gMPAutoHidden, si->shownWord != 0, MSBDResizeUnpack(si->shownWord), CACurrentMediaTime());
+        if (wasLive && !gMPResizeLatch.live && gMPResizeLatch.graceUntil > 0)   // (the grace's end draws again, unless a word came first)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((MSBD_RZ_LATCH_GRACE + 0.02) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MPUpdateAll(); });
+    }
+#if DEBUG
+    if (wasLive != gMPResizeLatch.live) MPLog([NSString stringWithFormat:@"%.3f resize: drag %@", CACurrentMediaTime(), gMPResizeLatch.live ? @"latched (the press's glyph until the button is let go)" : @"over"]);
+#endif
     BOOL r = %orig;
 #if DEBUG
     { static long long lastVis = LLONG_MIN; long long v = MPVisibilityState((UIViewController *)self);
@@ -792,7 +973,8 @@ static void MPApplyVisibility(void) {
     PUIDPointerShapeView *own = MPIvar(self, "_pointerShapeView");
     if ([own isKindOfClass:[UIView class]]) {
         static const void *kMPStateSigKey = &kMPStateSigKey;
-        NSUInteger sig = (gMPAutoHidden ? 1 : 0) | (gMPHovering ? 2 : 0) | ((NSUInteger)(MPVisibilityState((UIViewController *)self) & 0xff) << 2);
+        NSUInteger sig = (gMPAutoHidden ? 1 : 0) | (gMPHovering ? 2 : 0) | ((NSUInteger)(MPVisibilityState((UIViewController *)self) & 0xff) << 2)
+                       | (si ? ((NSUInteger)((si->count + 1) & 0xF) << 10) | (gMPResizeLatch.live ? (1u << 14) : 0) : 0);   // (F51: the arrows and the latch change what shows; off: 1.8.8.4's)
         NSNumber *last = objc_getAssociatedObject(own, kMPStateSigKey);
         if (!last || last.unsignedIntegerValue != sig) {
             objc_setAssociatedObject(own, kMPStateSigKey, @(sig), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -864,11 +1046,14 @@ static NSData *MPPointerCapture(BOOL stateOnly) {
     }
     if (stateOnly || !win) {
         CGAffineTransform t = a.affineTransform;
-        NSString *st = [NSString stringWithFormat:@"view %@ at %@ top %@ | other display %d (window screen %@, main %@) | shape %lld %@ | hovering %d autohidden %d opacity %.2f | enabled %d size %.2f rot %.2f | cursor %@ hidden %d in view %d transform [%.2f %.2f %.2f %.2f] | native hidden %d weHid %d views | root hidden %d weHidRoot %d | stand down %d (aside verdict %u seen %u, missing 0x%x, now %u)",
+        MPStateInfo *si = gMPController ? objc_getAssociatedObject(gMPController, kMPStateInfoKey) : nil;
+        NSString *rz = [NSString stringWithFormat:@" | resize fact 0x%llx shown 0x%llx latched %d, arrows %d (angles %d: %.3f %.3f), pressed %d, glyph %u", gMPResizeWord, si ? si->shownWord : 0ULL, gMPResizeLatch.live,
+            si ? si->count : -2, si ? si->nAngles : 0, si && si->nAngles > 0 ? si->angles[0] : 0.0, si && si->nAngles > 1 ? si->angles[1] : 0.0, si ? si->pressed : 0, a ? [objc_getAssociatedObject(a, kMPGlyphKeyKey) unsignedIntValue] : 0u];
+        NSString *st = [NSString stringWithFormat:@"view %@ at %@ top %@ | other display %d (window screen %@, main %@) | shape %lld %@ | hovering %d autohidden %d opacity %.2f | enabled %d size %.2f rot %.2f | cursor %@ hidden %d in view %d transform [%.2f %.2f %.2f %.2f] | native hidden %d weHid %d views | root hidden %d weHidRoot %d | stand down %d (aside verdict %u seen %u, missing 0x%x, now %u)%@",
             sv ? NSStringFromClass([sv class]) : @"-", NSStringFromCGRect(sv.frame), win ? [NSString stringWithFormat:@"%@ %@ window %p", NSStringFromClass([win class]), NSStringFromCGRect(win.frame), sv.window] : @"-",
             sv ? MPDisplayInfoFor(sv).reason != 0 : 0, sv.window.screen ? NSStringFromCGRect(sv.window.screen.bounds) : @"-", NSStringFromCGRect([UIScreen mainScreen].bounds),
             shape.shapeType, NSStringFromCGRect(shape.bounds), gMPHovering, gMPAutoHidden, a ? a.opacity : -1, MPEnabled(), MPSize(sv), sv ? MPRotationFor(sv) : MPRotation(),
-            a ? @"yes" : @"no", a.hidden, a.superlayer == sv.layer, t.a, t.b, t.c, t.d, native.layer.hidden, (int)[objc_getAssociatedObject(sv, kMPHidNativeKey) count], [[gMPController valueForKey:@"_pointerRootView"] isHidden], gMPWeHidRoot, gMPStandDown, gMPAside, gMPAsideSeen, gMPMissing, gMPNow];
+            a ? @"yes" : @"no", a.hidden, a.superlayer == sv.layer, t.a, t.b, t.c, t.d, native.layer.hidden, (int)[objc_getAssociatedObject(sv, kMPHidNativeKey) count], [[gMPController valueForKey:@"_pointerRootView"] isHidden], gMPWeHidRoot, gMPStandDown, gMPAside, gMPAsideSeen, gMPMissing, gMPNow, rz];
         // one line per pointer view (per display): which display and why, the turns between the pointer and that display, the final turn
         NSMutableString *all = [st mutableCopy];
         for (PUIDPointerShapeView *v in [gMPShapeViews allObjects]) {
@@ -904,7 +1089,34 @@ static NSData *MPPointerCapture(BOOL stateOnly) {
     notify_register_check("com.besiktasliseba.macpointer.orient", &gMPOrientToken);
     notify_register_check("com.besiktasliseba.macpointer.hide", &gMPHideToken);
     int changed = 0;
-    notify_register_dispatch("com.besiktasliseba.macpointer.changed", &changed, dispatch_get_main_queue(), ^(int t) { MPUpdateAll(); MPApplyVisibility(); MPPublishPresence(); });
+    MPResizeRead();   // (1.8.9: Mac Resize Pointers, from the config word as it stands)
+    notify_register_dispatch("com.besiktasliseba.macpointer.changed", &changed, dispatch_get_main_queue(), ^(int t) { MPResizeRead(); MPUpdateAll(); MPApplyVisibility(); MPPublishPresence(); });
+    // (1.8.9, F51: SpringBoard's resize fact, kept at each change -- the order of it and the pointer's own update does not matter, whichever
+    //  comes last decides)
+    int resizeToken = 0;
+    if (notify_register_dispatch(MSBD_RZ_NOTE, &resizeToken, dispatch_get_main_queue(), ^(int t) {
+            uint64_t w = 0; notify_get_state(t, &w);
+            if (w == gMPResizeWord) return;
+            gMPResizeWord = w;
+            if (!MPResizeOn()) return;   // (Mac Resize Pointers off: kept, never drawn -- 1.8.8.4's look; SpringBoard says no fact then anyway)
+            MSBDResizeLatchWord(&gMPResizeLatch);   // (a word after a drag's button-up ends its grace)
+            if (MSBDResizeUnpack(w).source == MSBD_RZ_SRC_GRIP) {   // (F51b: a grip's word starts its lease; past it, drawn again without it)
+                gMPResizeGripAt = CACurrentMediaTime(); gMPResizeGripSeq = gMPShapeSeq;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((MSBD_RZ_GRIP_LEASE + 0.05) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (gMPResizeWord == w) MPUpdateAll();   // (no newer word: the lease is over)
+                });
+            }
+#if DEBUG
+            {   // (a change of place only: a grip's fact is said again every 0.4 s and at each hover in it -- review F51b, finding 12)
+                static uint64_t lastLogged = 0;
+                MSBDResizeFact f = MSBDResizeUnpack(w), g = MSBDResizeUnpack(lastLogged);
+                if (!MSBDResizeSamePlace(f, g) || f.source != g.source)
+                    MPLog([NSString stringWithFormat:@"%.3f resize fact: kind %u position %u directions %u display %u source %u", CACurrentMediaTime(), f.kind, f.position, f.directions, f.display, f.source]);
+                lastLogged = w;
+            }
+#endif
+            MPUpdateAll();
+        }) == NOTIFY_STATUS_OK) notify_get_state(resizeToken, &gMPResizeWord);
     // (whether we stand down is checked once every tweak is loaded -- a moment after start, on the main queue -- and published for SpringBoard)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MPPublishPresence(); });
 #if DEBUG   // (release plan 3b: this unauthenticated command channel into pointeruid must not exist in a release build)

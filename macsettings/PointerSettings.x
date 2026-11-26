@@ -1,7 +1,7 @@
 #import <unistd.h>
 // Pointer (M1 pipeline C6, 2026-09-24): a "Pointer" row in the Settings sidebar, shown only while a trackpad or mouse is attached (like iPadOS's own
 // trackpad settings), showing the Pointer Style and opening the one page for the pointer: Pointer Style (iPadOS = the stock round pointer, Mac = the
-// Mac pointer drawn by MacPointer in pointeruid), Hide in Virtual Mac (Mac only, where VirtualMac can run) and Block Pointer Pull-Down, then Apple's own Pointer Control and
+// Mac pointer drawn by MacPointer in pointeruid), Mac Resize Pointers (Mac only), Hide in Virtual Mac (Mac only, where VirtualMac can run) and Block Pointer Pull-Down, then Apple's own Pointer Control and
 // Trackpad & Mouse settings, live (common/NativeEmbed.h). Our settings are stored in Mac Status Bar's own preferences (com.besiktasliseba.macstatusbar)
 // and apply live: SpringBoard hands them to pointeruid.
 // Whether a pointer device is attached comes from SpringBoard too (Darwin notification state com.besiktasliseba.macpointer.device, see Mac Status Bar's
@@ -15,6 +15,7 @@
 #import "../common/Hypervisor.h"   // (MSBDHypervisorCapable: Hide in Virtual Mac only where VirtualMac can run)
 #import "../common/InputDevices.h"   // (MSBDPointerAttached: read the same way by the Ethernet row's rule, EthernetFix.x -- 1.7.5)
 #import "../common/MacPointerStatus.h"   // (1.8.8.2, GitHub #17: what the Mac pointer is doing, in plain words under Pointer Style)
+#include "../common/MacResizeCursor.h"   // (1.8.9: Mac Resize Pointers -- its key and its default per iPadOS, the same as SpringBoard's)
 #import <dlfcn.h>
 
 @interface PSSpecifier : NSObject
@@ -83,7 +84,7 @@ static UIImage *MSPointerIcon(void) {
 
 @interface MSPointerListController : PSListController
 @end
-// Our pointer settings: Pointer Style, then (Mac pointer) Hide in Virtual Mac (where VirtualMac can run) and Use Pointer Control Style, and Block Pointer Pull-Down, each in
+// Our pointer settings: Pointer Style, then (Mac pointer) Mac Resize Pointers, Hide in Virtual Mac (where VirtualMac can run) and Use Pointer Control Style, and Block Pointer Pull-Down, each in
 // its group with its footer. target: whatever reads and writes their preferences (our page; on iPadOS 18 a helper on Apple's own Trackpad page,
 // AppleGroups18.x). onApplePage: there the first group is headed "Mac Pointer" and Pointer Control is not "below" but in Accessibility.
 NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage) {
@@ -123,6 +124,23 @@ NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage) {
                     [s addObject:rb];
                 }
             }
+            // (1.8.9: Mac Resize Pointers, KT 25 Nov ~19:35: "Resize cursor ability on versions except 18 should be off by default too, since it
+            //  might affect how windows behave for users": on by default on iPadOS 18 and later, off on 15-17, a choice made wins -- the same rule
+            //  as SpringBoard's, common/MacResizeCursor.h; live, no respring. The words say only what was read on a device: Stage Manager windows on
+            //  iPadOS 18 (16 and 17 have the same bands, said there once a device pass has read them -- review 1.8.9 F51, finding 4); our window
+            //  engines' resize corners on every iPadOS they run (F51b) -- the words name the engines, not what is installed)
+            static long osMajor = 0; if (!osMajor) osMajor = (long)[[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;
+            PSSpecifier *gr = [PSSpecifier groupSpecifierWithName:nil];
+            [gr setProperty:osMajor >= 18 ? @"Shows macOS's resize pointers at the edges and corners of Stage Manager windows and at the resize corners of Aerial, Zetsu and MilkyWay4 windows."
+                                          : @"Shows macOS's resize pointers at the resize corners of Aerial, Zetsu and MilkyWay4 windows." forKey:@"footerText"];
+            [s addObject:gr];
+            PSSpecifier *rz = [PSSpecifier preferenceSpecifierNamed:@"Mac Resize Pointers" target:target set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
+            [rz setIdentifier:@"MAC_RESIZE_POINTERS"];
+            [rz setProperty:@MSBD_RZ_PREF_KEY forKey:@"key"];
+            [rz setProperty:MP_DOMAIN forKey:@"defaults"];
+            [rz setProperty:@(MSBDResizePointersDefault(osMajor)) forKey:@"default"];
+            [rz setProperty:MP_NOTIFY forKey:@"PostNotification"];
+            [s addObject:rz];
             if (MSBDHypervisorCapable()) {   // (only where VirtualMac can run at all -- M1/M2 up to 16.3.1, common/Hypervisor.h; the stored switch is kept)
                 PSSpecifier *gv = [PSSpecifier groupSpecifierWithName:nil];
                 [gv setProperty:@"Virtual Mac draws its own pointer." forKey:@"footerText"];

@@ -1597,9 +1597,12 @@ static CGPoint DMSMClampCenter(CGPoint c, CGSize s, CGRect area) {
 // this centre and size, in a container of this size, stands at such a place (or is such a window a resize by hand is changing), and where it keeps it
 // (its last argument: that place by the rule against the desktop as it is now, StatusBar.x DMSMPastEdgeHeldAt); that window goes there, not clamped
 // into the stage area (its top still under the area's top: else clamped as any other). keptPast counts them for the caller.
-typedef struct { NSArray *before; id lone; BOOL loneHidden; CGSize container; BOOL (*kept)(CGPoint, CGSize, CGSize, CGPoint *); int keptPast; } DMSM17Pass;
+// 1.8.9 (B114): `dragged`, when the hook hands one over, is asked first for each window (its auto-layout item, its place before Apple's pass, its size,
+// the container): YES for the window under Stage Manager's own drag held past an edge where the finger has it -- recorded there, and *p that place
+// (StatusBar.x DMSMAppleDragPass17) -- so `kept` then keeps it there instead of the clamp; NO leaves the place as it was.
+typedef struct { NSArray *before; id lone; BOOL loneHidden; CGSize container; BOOL (*kept)(CGPoint, CGSize, CGSize, CGPoint *); int keptPast; BOOL (*dragged)(id, CGPoint *, CGSize, CGSize); } DMSM17Pass;
 static DMSM17Pass DMSM17PassBegin(id space, BOOL haveContainer, CGRect container) {
-    DMSM17Pass pass = { nil, nil, NO, haveContainer ? container.size : CGSizeZero, NULL, 0 };
+    DMSM17Pass pass = { nil, nil, NO, haveContainer ? container.size : CGSizeZero, NULL, 0, NULL };
     NSArray *items = DMSMSpaceItems(space);
     NSMutableArray *before = [NSMutableArray array];
     for (id it in items) {
@@ -1625,6 +1628,7 @@ static int DMSM17PassEnd(DMSM17Pass *pass, CGRect area) {
         if (e == [NSNull null]) continue;
         NSArray *en = e;
         CGPoint p = [en[1] CGPointValue], now, keep = p; CGSize z = [en[2] CGSizeValue];
+        if (pass->dragged && ![en[3] boolValue] && pass->container.width > 0 && pass->container.height > 0 && pass->dragged(en[0], &p, z, pass->container)) keep = p;   // (B114, above)
         // (a window the user let go past an edge, at that place: kept where the callback keeps it, its top under the area's top -- the kept top: one
         //  recorded at the top edge while the menu bar hid itself is kept under the bar again, past its edge still, 1.8.8.4)
         BOOL past = ![en[3] boolValue] && pass->kept && pass->container.width > 0 && pass->container.height > 0 && pass->kept(p, z, pass->container, &keep) && isfinite(keep.x) && isfinite(keep.y) && keep.y - z.height / 2.0 >= CGRectGetMinY(area) - 0.5;
@@ -1675,6 +1679,11 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full, int axis) 
     CGFloat least = axis == 0 ? kMSBDWindowMinWidth : kMSBDWindowMinAppHeight;   // (every engine's smallest app, see above)
     if (lo < least && least < full) lo = least;
     if (axis == 1 && DMSMLayoutGen() == 17 && lo > kSM17MinWindowHeight && kSM17MinWindowHeight < full) lo = kSM17MinWindowHeight;   // (iPadOS 17+, see above)
+#if DEBUG
+    // (debug, 1.8.9 GitHub #20: /tmp/msb-smgrid-h600 -- the heights start at 600, as a native iPadOS 16 iPad's own list starts at 480: the device rows of
+    //  a window laid out taller than it asks -- App Window Sizes' Small in landscape on a 12.9", a 505 pt card -- on iPads whose TrollPad lists start at 150)
+    if (axis == 1 && DMTestFlag("/tmp/msb-smgrid-h600") && 600.0 < full) lo = MAX(lo, 600.0);
+#endif
     NSString *key = [NSString stringWithFormat:@"%.0f-%.0f", lo, full];
     NSArray *hit = cache[key];
     if (hit) return hit;

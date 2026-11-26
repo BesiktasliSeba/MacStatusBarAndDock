@@ -40,6 +40,7 @@
 #import "../common/EngineBuilds.h"  // (the tested engine builds: one list with Settings and the root helper)
 #import "../common/MacPointerActive.h"   // (MSBDIPadPointerEffects: iPadOS's pointer effects on our buttons and icons, only without the Mac arrow)
 #import "../common/MacPointerStatus.h"   // (1.8.8.2: which pointeruid runs, for Settings > Pointer's word on the Mac pointer: DMMacPointerProcessCheck)
+#include "../common/MacResizeCursor.h"   // (1.8.9: Settings > Pointer > Mac Resize Pointers -- its key, its default per iPadOS, its bit for pointeruid)
 #import "../common/PointerAnim.h"   // (DMPtrAnimDecide: Pointer Animations with the Mac pointer, Mac-tested)
 #import "../common/StageManagerAvailable.h"   // (MSBDStageManagerAvailable: the 1.1.0 Stage Manager engine notice; one test with Settings and the root helper)
 #import "../common/SettingsRoot.h"   // (MSBDSettingsLink: links into our Settings pages where Settings' root list has them -- iPadOS 18: in General)
@@ -143,6 +144,7 @@ static void DMDispReload(void);
 #include "../common/MenuBarHeight.h"   // (the bar's height and the geometry from it, Mac-tested)
 #include "../common/MenuBarSize.h"     // (Settings > Status Bar > Menu Bar Size, 1.7.3: Small / Medium / Large, Mac-tested)
 #include "../common/BarEnds.h"         // (the menu titles end before the right end; the date gives way first: 1.8.8.1, Mac-tested)
+#include "../common/MacCardLook.h"     // (the Mac card look of a notification platter: our banners and Mac Lock Screen's cards, 1.8.9)
 static CGFloat DMMenuBarHeight(void);   // (our menu bar's height on the iPad's screen: 24 pt on Face ID iPads, 20 pt on Home-button iPads -- near DMTopLimit)
 static CGFloat DMMenuBarKnownHeight(void);   // (the same once read from a bar, 0 before)
 static CGFloat DMMenuBarStockHeight(void);   // (iOS's own height of that bar, the size left out: 24 / 20 -- 0 before it is read)
@@ -626,6 +628,11 @@ static id DMSMFrontStage(void);
 static void DMSMDismissOtherFullScreen(id stage, NSString *keepKey);
 static BOOL DMSMEngine(void);
 static void DMWatchDockChanges(void);
+static void DMRZFollow(BOOL styleMac);   // (ResizeFact.h, 1.8.9 F51: macOS's resize pointers on or off with the Mac pointer)
+static void DMRZGripDrag(CGPoint p, UIScreen *s, UIGestureRecognizerState st);   // (ResizeFact.h, 1.8.9 F51b: a grip's drag point, from our engines' drags)
+#if DEBUG
+static void DMRZInfo(void);   // (ResizeFact.h, 1.8.9 F51b: the rzinfo trigger)
+#endif
 @class DMNativeWindow;
 static DMNativeWindow *DMNativeActiveApp(void);           // (NativeWindow.h: a native window acting as the front app, or nil)
 static BOOL DMDesktopTypingNow(void);                     // (Desktop.h: a name edited on the desktop or a sticky note typed in, 1.8.8.1)
@@ -4465,6 +4472,7 @@ static CGPoint DMPanDownPointOnScreen(UIPanGestureRecognizer *g, UIWindow *w, CG
     UIWindow *w = self.zwindow;
     if (!w) return;
     CGPoint p = DMZetsuPanPointOnScreen(g, w);
+    DMRZGripDrag(p, w.screen, g.state);   // (1.8.9 F51b: macOS's resize pointers follow the drag's own point -- no hovers come while it runs)
     if (g.state == UIGestureRecognizerStateBegan) {
         CGRect f0 = w.frame; CGPoint p0 = DMPanDownPointOnScreen(g, w, &f0);
         self.startFrame = f0; self.startPoint = p0; self.atMinimum = NO;
@@ -15283,6 +15291,8 @@ static void DMMilkyWayToFullScreen(AXWindowView *window, NSString *bundleID, id 
 - (void)sizeChangePan:(id)gesture {
     UIView *me = (UIView *)self;
     UIGestureRecognizer *g = gesture;
+    if ([g isKindOfClass:[UIGestureRecognizer class]] && g.view && me.window.screen)   // (1.8.9 F51b: macOS's resize pointers follow the drag's own point)
+        DMRZGripDrag([g.view convertPoint:[g locationInView:g.view] toCoordinateSpace:me.window.screen.coordinateSpace], me.window.screen, g.state);
     if (g.state == UIGestureRecognizerStateBegan) {
         DMShowMilkyWayVeil(me);
         objc_setAssociatedObject(self, kMWMinToldKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -32762,6 +32772,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd hasPrefix:@"rstrip"] && DMRStripTrigger(cmd)) {}   // the recent windows strip: rstrip, rstrip_reveal, rstrip_edge, rstrip_pick_<n> (RecentStrip.h)
     else if ([cmd hasPrefix:@"smcards"] && DMSMCardsTrigger(cmd)) {}   // the App Switcher's cards with the Stage Manager engine (SMCards.h)
     else if ([cmd hasPrefix:@"dset_"] && DMDispSettingsTrigger(cmd)) {}   // Display Settings: dset_open_ipad / _tv, dset_state, dset_set_<ROW>_<v>, dset_reset_<ROW>, dset_useipad_ask / _ok, dset_close (DisplaySettings.h)
+    else if ([cmd isEqualToString:@"rzinfo"]) DMRZInfo();   // rzinfo: macOS's resize pointers -- the engines' grips, the recognizers, the fact (ResizeFact.h; read-only)
     else if ([cmd isEqualToString:@"ptrinfo"]) DMPtrInfo();   // ptrinfo: the pointer's place with another display -- the iPad's region, the hovers (PointerRegion.h; read-only)
     else if (([cmd hasPrefix:@"disp"] || [cmd hasPrefix:@"tvdesk_"] || [cmd hasPrefix:@"dockhide_"] || [cmd hasPrefix:@"tvhover_"]) && DMDispSpikeTrigger(cmd)) {}   // the 1.8.7 per-display spike: dispinfo, dispscale_, tvdesk_, dockhide_, tvhover_ (DisplaySpike.h)
 #endif
@@ -35368,6 +35379,10 @@ static char kA5MinWatchedKey, kA5MinDragKey, kA5MinFirstKey;   // (kA5MinFirstKe
 - (void)step:(UIPanGestureRecognizer *)g {
     UIView *h = g.view, *stage = h.superview;
     UIGestureRecognizerState s = g.state;
+    {   // (1.8.9 F51b: macOS's resize pointers follow the drag's own point -- no hovers come while it runs; ResizeFact.h DMRZGripDrag)
+        UIView *sup = stage.superview; UIScreen *sc = sup.window.screen;
+        if (sc) DMRZGripDrag([sup convertPoint:[g locationInView:sup] toCoordinateSpace:sc.coordinateSpace], sc, s);
+    }
     if (s != UIGestureRecognizerStateChanged && s != UIGestureRecognizerStateEnded) {   // (began: a new drag -- Aerial measures its offset now; or it ended another way)
         objc_setAssociatedObject(g, &kA5MinDragKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
@@ -39105,12 +39120,9 @@ static void DMBannerDebug(NSString *what) {
     h.closeButton.hidden = NO; h.optionsButton.hidden = NO;
     [h layout];
     // macOS look: a 14 pt continuous corner and a hairline edge on the platter (the material and the shadow stay the system's)
-    for (UIView *sub in v.subviews) if ([NSStringFromClass([sub class]) isEqualToString:@"PLPlatterView"]) {
-        if ([sub respondsToSelector:@selector(setCornerRadius:)]) ((void (*)(id, SEL, CGFloat))objc_msgSend)(sub, @selector(setCornerRadius:), 14.0);
-        sub.layer.borderWidth = 0.5;
-        sub.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:(v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 0.14 : 0.45)].CGColor;
-        sub.layer.cornerRadius = 14.0; sub.layer.cornerCurve = kCACornerCurveContinuous;
-    }
+    // (the look is common/MacCardLook.h's, shared with Mac Lock Screen's Mac-Style Cards, 1.8.9: the same card on the Lock Screen)
+    for (UIView *sub in v.subviews) if ([NSStringFromClass([sub class]) isEqualToString:@"PLPlatterView"])
+        MSBDMacCardApply(sub, v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark, NO);
 }
 %end
 %end
@@ -39120,7 +39132,7 @@ static void DMBannersInit(void) { static BOOL done; if (done) return; done = YES
 // ===== MacPointer bridge (M1 pipeline C6, 2026-09-24) ===========================================================================================
 // The Mac pointer is drawn by MacPointer inside pointeruid (macpointer/MacPointer.x), which is sandboxed: it cannot read our preferences, and it does
 // not know the interface orientation or which app is in front. SpringBoard publishes all of that as Darwin notification states and posts
-// "com.besiktasliseba.macpointer.changed" whenever something changes: config (bit 0 = Pointer Style Mac, bit 3 = Use Pointer Control Style, bits 8-15 = old size setting, unused), orient (1-4), hide
+// "com.besiktasliseba.macpointer.changed" whenever something changes: config (bit 0 = Pointer Style Mac, bit 3 = Use Pointer Control Style, bit 4 = Mac Resize Pointers, bits 8-15 = old size setting, unused), orient (1-4), hide
 // (1 = Virtual Mac is in front and "Hide in Virtual Mac" is on). It also publishes "com.besiktasliseba.macpointer.device" (1 = a trackpad or mouse is
 // attached; MacSettings shows its Settings "Pointer" row only then) with "com.besiktasliseba.macpointer.device.changed".
 static BOOL gDMPointerAttached = NO;   // a trackpad or mouse is attached (DMPointerDeviceCheck; read by the auto-hiding status bar)
@@ -39293,6 +39305,7 @@ void DMPointerAnimTestReset(void) {   // (the ptranimreset trigger)
 // Decided at every 2 s check of the bridge -- with either status bar style and on every iPadOS -- and at once when Pointer Style or MacPointer's
 // state changes.
 static BOOL gDMPtrStyleMac = YES;   // (Pointer Style, from the bridge's preferences read)
+static BOOL gDMPtrResizeOn = NO;    // (Settings > Pointer > Mac Resize Pointers, the same read: never set, on on iPadOS 18 and off on 15-17 -- 1.8.9, KT 25 Nov)
 // MacPointer's last word kept over a reboot (common/MacPointerActive.h MSBDMacPointerStateKept, P1): "standing down" stored when it says 2, removed
 // when it says 1; a 0 (not said since the boot) changes nothing. Written only on a change.
 static void DMMacPointerKeepState(uint64_t said) {
@@ -39385,9 +39398,15 @@ static void DMPointerBridgeTick(void) {
         BOOL useAX = NO;   // (Use Pointer Control Style, off by default: the classic Mac pointer)
         v = CFPreferencesCopyValue(CFSTR("macPointerUseAXStyle"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         if (v) { if (CFGetTypeID(v) == CFBooleanGetTypeID()) useAX = CFBooleanGetValue(v); CFRelease(v); }
+        // (Mac Resize Pointers, 1.8.9: never set, on on iPadOS 18 and later, off on 15-17; the user's choice wins -- common/MacResizeCursor.h)
+        static long osMajor = 0; if (!osMajor) osMajor = (long)[[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;
+        v = CFPreferencesCopyValue(CFSTR(MSBD_RZ_PREF_KEY), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        BOOL resize = MSBDResizePointersOn(MSBDResizePointersStored(v), osMajor);
+        if (v) CFRelease(v);
         uint64_t pct = (uint64_t)llround(MAX(0.5, MIN(2.0, size)) * 100.0);
-        config = (on ? 1 : 0) | (pct << 8) | (DMAutoHideActive() ? 4 : 0) | (useAX ? 8 : 0);   // (bit 2: the auto-hiding status bar wants to know where the pointer is; bit 3: Use Pointer Control Style)
-        gDMPtrStyleMac = on; DMPointerAnimTick();   // (Pointer Animations: at once after a Pointer Style change)
+        config = (on ? 1 : 0) | (pct << 8) | (DMAutoHideActive() ? 4 : 0) | (useAX ? 8 : 0) | (on && resize ? MSBD_RZ_CONFIG_BIT : 0);   // (bit 2: the auto-hiding status bar wants to know where the pointer is; bit 3: Use Pointer Control Style; bit 4: Mac Resize Pointers, with the Mac pointer)
+        gDMPtrStyleMac = on; gDMPtrResizeOn = resize; DMPointerAnimTick();   // (Pointer Animations: at once after a Pointer Style change)
+        DMRZFollow(on);   // (macOS's resize pointers, ResizeFact.h: at once too)
     }
     config = (config & ~(uint64_t)4) | (DMAutoHideActive() ? 4 : 0);
     uint64_t orient = (uint64_t)DMRealInterfaceOrientation();
@@ -39400,6 +39419,8 @@ static void DMPointerBridgeTick(void) {
     if (changed) notify_post("com.besiktasliseba.macpointer.changed");
     static CFTimeInterval lastDeviceCheck = -10;
     if (CACurrentMediaTime() - lastDeviceCheck > 1.9) { lastDeviceCheck = CACurrentMediaTime(); DMPointerDeviceCheck(); DMPointerAnimTick(); DMMacPointerProcessCheck(); }   // every 2 s, at either pace
+    static CFTimeInterval lastResizeFollow = -10;   // (macOS's resize pointers, ResizeFact.h: on / off with the Mac pointer, a gone owner's fact cleared -- every 2 s too)
+    if (CACurrentMediaTime() - lastResizeFollow > 1.9) { lastResizeFollow = CACurrentMediaTime(); DMRZFollow(gDMPtrStyleMac); }
 }
 // The bridge's pace (performance audit P4): every 0.25 s while a trackpad or mouse is attached (or the auto-hiding status bar is on), otherwise
 // once a second -- its per-tick work (orientation, front app, settings for MacPointer) matters only with a pointer, and the 2 s device check still
@@ -43906,10 +43927,12 @@ static id DMSMEntityForStageItem(id stage, id item) {
     return DMSMEntityIn(stage, b);
 }
 // ---- a window let go partly past the screen's edges stays there (1.8.8.3, GitHub #19: as Zetsu's and MilkyWay4's; the rule: SMPastEdge.h) ----------
-// The drop records it (DMSMPastEdgeDropped): its centre and size in points, on a screen of that size, where Stage Manager will lay it out. Our requests
+// The drop records it (DMSMPastEdgeDropped; Stage Manager's own window drag too, 1.8.9: DMSMAppleDragNote): its centre and size in points, on a screen of
+// that size, where Stage Manager will lay it out. Our requests
 // (DMSMAttrsFitScreen) and Stage Manager's layout passes (16: DMSMPastEdgeBefore16 / After16 around its stage-area constraint; 17 and 18: DMSM17PassEnd)
 // keep a window standing at a recorded place there instead of fitting it inside the desktop; any other place is fitted as before. By the place, not
-// the window's key: iPadOS 17's auto-layout items carry no key. The drag's own move holds only its top under the menu bar (DMSMPastEdgeDragKept), as
+// the window's key: the passes hand over places and sizes (iPadOS 17's auto-layout items name their window only through a display item, read for
+// Stage Manager's own drag alone: DMSMAppleDragPass17). The drag's own move holds only its top under the menu bar (DMSMPastEdgeDragKept), as
 // every engine's drag; a resize by hand takes the record along (DMSMPastEdgeResizeBegan), as the other engines' resizes leave a window where it is.
 // Memory only (a respring's windows come back inside, as the other engines' restore fits them); the iPad's other shape's records go after a turn (every
 // engine's turn fits every window inside); at most 16, those of windows no longer in any stage dropped at each new record.
@@ -43919,6 +43942,34 @@ static NSMutableArray<NSString *> *gSMPastEdgeOrder;   // (the keys, oldest firs
 // A resize by hand of a recorded window (DMSMPastEdgeResizeBegan): its key, its card as the resize began (the record's place and size), the sides the
 // resize drags (SMPastEdge.h kDMSMPastEdgeLeft ...); until the next drag of a title bar or the next resize. One noted per resize in the log.
 static NSString *gSMPastEdgeResizeKey; static CGRect gSMPastEdgeResizeFrom; static unsigned gSMPastEdgeResizeSides; static BOOL gSMPastEdgeResizeTold;
+// 1.8.9 (GitHub #20): a window is known by the size Stage Manager lays it out at (SMPastEdge.h DMSMPastEdgeLaidOut) -- in the record and in every
+// lookup, where our requests and a window's way back read the size its attributes ask: never smaller than the first width and height of the size grid
+// its screen's windows are laid out on, as the grid's rounding makes it. Before, the record kept the size asked, and a window asked smaller than the
+// grid's first sizes (App Window Sizes' Small in landscape on a native iPadOS 16 iPad, whose heights start at 480 by our reading of 17.6.1, SMPastEdge.h)
+// was never found by the layout passes, which see it laid out bigger: let go past an edge, it was fitted inside at once. Each container size's first sizes, as the gridWidths /
+// gridHeights hooks hand the lists over (DMSMPastEdgeGridNote); none read yet for a screen: the size as asked, as before.
+static NSMutableDictionary<NSString *, NSValue *> *gSMGridFirstBySize;   // (container size -> @(CGSize): the lists' first width and height, points)
+static CGSize DMSMPastEdgeGridFirst(CGSize scr) {
+    NSValue *v = gSMGridFirstBySize[NSStringFromCGSize(scr)];
+    return v ? v.CGSizeValue : CGSizeZero;
+}
+static CGSize DMSMPastEdgeLaid(CGSize s, CGSize scr) {
+    return DMSMPastEdgeLaidOut(s, DMSMPastEdgeGridFirst(scr));
+}
+// A size list handed over for a container (axis 0 the widths, 1 the heights): its first entry noted when it changes. A list of anything but numbers,
+// or a first size not a sane number, notes nothing (that axis then keeps what it had, 0 at the start).
+static void DMSMPastEdgeGridNote(CGSize container, int axis, id list) {
+    if ((axis != 0 && axis != 1) || !(container.width >= 1.0) || !(container.height >= 1.0) || ![list isKindOfClass:[NSArray class]]) return;
+    id f = [(NSArray *)list firstObject];
+    double v = [f isKindOfClass:[NSNumber class]] ? [f doubleValue] : NAN;
+    if (!isfinite(v) || v < 1.0 || v > 20000.0) return;
+    NSString *k = NSStringFromCGSize(container);   // (as the minimum width's note in -gridWidths makes one per call: a few per layout pass)
+    CGSize was = [gSMGridFirstBySize[k] CGSizeValue], now = was;
+    if (axis == 0) now.width = v; else now.height = v;
+    if (fabs(now.width - was.width) < 0.01 && fabs(now.height - was.height) < 0.01 && gSMGridFirstBySize[k]) return;
+    if (!gSMGridFirstBySize) gSMGridFirstBySize = [NSMutableDictionary dictionary];
+    gSMGridFirstBySize[k] = [NSValue valueWithCGSize:now];
+}
 // That screen's Dock stands at its bottom (a TV's always; the iPad's unless Settings > Dock > Position puts it at a side in landscape): windows may go past.
 static BOOL DMSMPastEdgeAllowedOn(CGSize scr) {
     CGSize main = [UIScreen mainScreen].bounds.size;
@@ -43936,6 +43987,7 @@ static void DMSMPastEdgeRemove(NSString *key) {
 // size, so it stays where it is, as on the other engines. (Also drops the iPad's other shape's records: the iPad turned since.)
 static BOOL DMSMPastEdgeHeld(CGPoint c, CGSize s, CGSize scr) {
     if (!gSMPastEdge.count || !DMSMFree()) return NO;
+    s = DMSMPastEdgeLaid(s, scr);   // (1.8.9: as Stage Manager lays it out, as the record has it)
     CGSize main = [UIScreen mainScreen].bounds.size;
     BOOL hit = NO; NSMutableArray<NSString *> *turned = nil;
     for (NSString *k in gSMPastEdge) {
@@ -43992,6 +44044,7 @@ static void DMSMPastEdgeResizeBegan(unsigned dragged, CGRect start) {
 // with the other engines. YES when it moved.
 static BOOL DMSMPastEdgeKeepIn(CGPoint *cp, CGSize pts, CGSize scr, CGRect u) {
     if (!cp) return NO;
+    pts = DMSMPastEdgeLaid(pts, scr);   // (1.8.9: its top as Stage Manager lays it out -- a window raised to the grid's first height reaches higher -- and the record's size)
     CGPoint k = DMSMPastEdgeCardCenter(*cp, pts, u, kSMBarH);
     DM_FEATURE_MARK("sm-past-edge-kept");
     if (fabs(k.x - cp->x) < 0.5 && fabs(k.y - cp->y) < 0.5) return NO;
@@ -44010,7 +44063,7 @@ static void DMSMPastEdgeMoved(CGRect was, CGRect now, CGSize scr) {
     if (!gSMPastEdge.count || was.size.height <= kSMBarH || now.size.height <= kSMBarH) return;
     CGPoint c0 = CGPointMake(CGRectGetMidX(was), CGRectGetMinY(was) + kSMBarH + (was.size.height - kSMBarH) / 2.0);
     CGPoint c1 = CGPointMake(CGRectGetMidX(now), CGRectGetMinY(now) + kSMBarH + (now.size.height - kSMBarH) / 2.0);
-    CGSize s0 = CGSizeMake(was.size.width, was.size.height - kSMBarH), s1 = CGSizeMake(now.size.width, now.size.height - kSMBarH);
+    CGSize s0 = DMSMPastEdgeLaid(CGSizeMake(was.size.width, was.size.height - kSMBarH), scr), s1 = DMSMPastEdgeLaid(CGSizeMake(now.size.width, now.size.height - kSMBarH), scr);   // (1.8.9: as laid out)
     for (NSString *key in [gSMPastEdge allKeys]) {
         NSArray<NSValue *> *r = gSMPastEdge[key];
         if (r.count != 3 || !DMSMPastEdgeSame(c0, s0, scr, r[0].CGPointValue, r[1].CGSizeValue, r[2].CGSizeValue)) continue;
@@ -44073,10 +44126,23 @@ static CGPoint DMSMPastEdgeDragKept(UIView *card, CGPoint t) {
     }
     return CGPointMake(t.x + (b.x - a.x), t.y + (b.y - a.y));
 }
+// A new record: the window `key` at this centre and size (as laid out), on a screen of size S. With `prune` the records of windows no longer in any stage
+// go first (a window's key or its app's, as the stages name them; a stage not read whole: nothing taken for gone; not from inside a layout pass, which
+// leaves them to the next drop); then the oldest past 16.
+static void DMSMPastEdgeSet(NSString *key, CGPoint centre, CGSize size, CGSize S, BOOL prune) {
+    if (!key.length) return;
+    if (!gSMPastEdge) { gSMPastEdge = [NSMutableDictionary dictionary]; gSMPastEdgeOrder = [NSMutableArray array]; }
+    DMSMPastEdgeRemove(key);
+    NSSet<NSString *> *present = prune && gSMPastEdge.count ? DMSMWindowKeysIn(DMSMRecentStages()) : nil;   // (nil: a stage not read whole -- nothing taken for gone)
+    for (NSString *k in [gSMPastEdgeOrder copy]) if (present && !DMSMKeysHold(present, k)) DMSMPastEdgeRemove(k);   // (a window's key or its app's: as the stages name them)
+    while (gSMPastEdgeOrder.count >= 16) DMSMPastEdgeRemove(gSMPastEdgeOrder.firstObject);
+    gSMPastEdge[key] = @[[NSValue valueWithCGPoint:centre], [NSValue valueWithCGSize:size], [NSValue valueWithCGSize:S]];
+    [gSMPastEdgeOrder addObject:key];
+}
 // The drop (after its snap): the card where it ends on the screen (snapped: its middle at `at`, a share of the screen; else as dropped) and the place
 // asked for (`at`, or `plain`: the dropped middle's share of the stage view). Past the screen's left, right or bottom edge: recorded where Stage
 // Manager will lay it out -- the place asked for in the screen's points, the size its attributes give (as DMSMAttrsFitScreen reads it; else the
-// card's). Any other drop takes the window's record away.
+// card's) as Stage Manager lays it out (1.8.9, DMSMPastEdgeLaid: never under its size grid's first sizes). Any other drop takes the window's record away.
 static void DMSMPastEdgeDropped(NSString *key, UIScreen *scn, CGRect droppedOnScreen, BOOL snapped, CGPoint at, CGPoint plain) {
     if (!key.length || !scn) return;
     CGSize S = scn.bounds.size;
@@ -44099,15 +44165,97 @@ static void DMSMPastEdgeDropped(NSString *key, UIScreen *scn, CGRect droppedOnSc
         CGSize p = DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, sz.type, S);
         if (p.width > 0 && p.height > 0) size = p;
     }
-    if (!gSMPastEdge) { gSMPastEdge = [NSMutableDictionary dictionary]; gSMPastEdgeOrder = [NSMutableArray array]; }
-    NSSet<NSString *> *present = gSMPastEdge.count ? DMSMWindowKeysIn(DMSMRecentStages()) : nil;   // (nil: a stage not read whole -- nothing taken for gone)
-    for (NSString *k in [gSMPastEdgeOrder copy]) if (present && !DMSMKeysHold(present, k)) DMSMPastEdgeRemove(k);   // (a window's key or its app's: as the stages name them)
-    while (gSMPastEdgeOrder.count >= 16) DMSMPastEdgeRemove(gSMPastEdgeOrder.firstObject);
+    CGSize askedSize = size;
+    size = DMSMPastEdgeLaid(size, S);   // (1.8.9, GitHub #20: the size the layout passes see; asked smaller than the grid's first sizes, it is laid out at them)
+    BOOL raised = fabs(size.width - askedSize.width) >= 0.5 || fabs(size.height - askedSize.height) >= 0.5;
+    if (raised) DM_FEATURE_MARK("sm-past-edge-laid-size");
     CGPoint centre = CGPointMake(asked.x * S.width, asked.y * S.height);
-    gSMPastEdge[key] = @[[NSValue valueWithCGPoint:centre], [NSValue valueWithCGSize:size], [NSValue valueWithCGSize:S]];
-    [gSMPastEdgeOrder addObject:key];
+    DMSMPastEdgeSet(key, centre, size, S, YES);
     DM_FEATURE_MARK("sm-past-edge-drop");
-    DMLog([NSString stringWithFormat:@"[smpast] %@ let go past the screen's edge at %@ (screen %@): it stays there (centre %@, size %@)", DMSMKeyText(key), NSStringFromCGRect(whole), NSStringFromCGSize(S), NSStringFromCGPoint(centre), NSStringFromCGSize(size)]);
+    DMLog([NSString stringWithFormat:@"[smpast] %@ let go past the screen's edge at %@ (screen %@): it stays there (centre %@, size %@%@)", DMSMKeyText(key), NSStringFromCGRect(whole), NSStringFromCGSize(S), NSStringFromCGPoint(centre), NSStringFromCGSize(size),
+           raised ? [NSString stringWithFormat:@", as Stage Manager lays it out: its attributes ask %@, under the size grid's first %@", NSStringFromCGSize(askedSize), NSStringFromCGSize(DMSMPastEdgeGridFirst(S))] : @""]);
+}
+// ---- Stage Manager's own window drag keeps a window past an edge too (1.8.9, B114) ---------------------------------------------------------------------
+// Stage Manager's window drag (the system gesture of a window's top strip: on iPadOS 16 the band just under our title bar, the card's status bar's,
+// some 22 pt; on 17 and 18 the window's top part, its toolbar too) moves a window as the finger goes. Its layout passes then fitted that window inside
+// the stage area: let go past an edge -- or a window already there, moved on -- it jumped back inside at the let go (16.7.7: Tips at {656, 397} ->
+// {512, 168}, Settings at x 485 -> 225; 17.5.1: Settings at x 806 -> 625, held at the edge for the whole drag), where our title bar's drag keeps it
+// (1.8.8.3's rule, SMPastEdge.h). The window it drags is the one under the finger where the drag began (DMSMAppleDragBegins: the windows' own hit
+// test, top window first; 16's passes name it themselves, their dragging item). While that drag's transaction runs, each layout pass hands that window's
+// place as the finger has it -- before Stage Manager's own step -- to DMSMAppleDragNote: held by the rule (its top under the desktop's top; left, right
+// and down as far as the finger takes it), past an edge it is recorded there as our drop records a window and the pass keeps it (16: DMSMPastEdgeBefore16
+// / After16; 17 and 18: DMSM17PassEnd); inside the screen its record goes and it is fitted inside as before. Its snap and the behind-the-Dock mark stay
+// our title bar's (Stage Manager's own drag never snapped or went behind the Dock with our engine, as before).
+static NSString *gSMAppleDragKey;   // (the window Stage Manager's own drag took: DMSMAppleDragBegins; nil once that drag is over)
+static CFTimeInterval gSMAppleDragToldAt; static BOOL gSMAppleDragPast;   // (its line: once a second while it holds a window past an edge)
+static BOOL DMSMWindowDragLive(void) {   // (Stage Manager's own window drag's transaction is running: SMGestureHook.h's list of SpringBoard's transactions, not complete)
+    static Class c; static SEL done; static BOOL looked;
+    if (!looked) { looked = YES; c = objc_getClass("SBWindowDragGestureWorkspaceTransaction"); done = NSSelectorFromString(@"isComplete"); }
+    if (!c || !gSMGestureTxs.count) return NO;
+    for (id t in gSMGestureTxs.allObjects) {
+        if (![t isKindOfClass:c]) continue;
+        if (DMSMGTGetter(t, done, 'B') && ((BOOL (*)(id, SEL))objc_msgSend)(t, done)) continue;   // (complete: over, though not out of the list yet)
+        return YES;
+    }
+    return NO;
+}
+// A pass's window under Stage Manager's own drag, its centre *c and size s (as laid out) on a screen of size scr: held by the rule; past an edge, recorded
+// there and *c that place (YES); inside the screen, its record (if any) taken away and *c as it was (NO). A window as big as the screen (our full
+// screen): nothing, as before.
+static BOOL DMSMAppleDragNote(NSString *key, CGPoint *c, CGSize s, CGSize scr) {
+    if (!key.length || !c || !DMSMFree() || !isfinite(c->x) || !isfinite(c->y) || !(s.width > 0) || !(s.height > 0) || !(scr.width > 0) || !(scr.height > 0)) return NO;
+    if (s.width >= scr.width - 1.0 && s.height >= scr.height - 1.0) return NO;   // (our full screen, as big as the container: never past an edge -- as 17's pass leaves it out, review)
+    CGSize laid = DMSMPastEdgeLaid(s, scr);
+    CGRect u = DMSMPastEdgeDeskOn(DMSMScreenOfSize(scr), scr);
+    CGPoint k = DMSMPastEdgeFiniteRect(u) ? DMSMPastEdgeCardCenter(*c, laid, u, kSMBarH) : *c;   // (its top under the desktop's top, as the drag of a title bar holds it)
+    CGRect whole = CGRectMake(k.x - laid.width / 2.0, k.y - laid.height / 2.0 - kSMBarH, laid.width, laid.height + kSMBarH);
+    BOOL past = DMSMPastEdgeAllowedOn(scr) && DMSMPastEdgeOut(whole, CGRectMake(0, 0, scr.width, scr.height));
+    NSArray<NSValue *> *r = gSMPastEdge[key];
+    if (!past) {
+        if (r) { DMSMPastEdgeRemove(key); DMLog([NSString stringWithFormat:@"[smpast] %@ in Stage Manager's own drag at %@: inside the screen, no longer past an edge", DMSMKeyText(key), NSStringFromCGRect(whole)]); }
+        gSMAppleDragPast = NO;
+        return NO;
+    }
+    NSArray<NSValue *> *now = @[[NSValue valueWithCGPoint:k], [NSValue valueWithCGSize:laid], [NSValue valueWithCGSize:scr]];
+    if (r) gSMPastEdge[key] = now;   // (its record follows the finger: its place in the order kept)
+    else DMSMPastEdgeSet(key, k, laid, scr, NO);   // (inside a layout pass: no stage read, the cap only)
+    DM_FEATURE_MARK("sm-past-edge-apple-drag");
+    CFTimeInterval t = CACurrentMediaTime();
+    if (!gSMAppleDragPast || t - gSMAppleDragToldAt > 1.0) {
+        gSMAppleDragToldAt = t;
+        DMLog([NSString stringWithFormat:@"[smpast] %@ in Stage Manager's own drag past the screen's edge at %@ (screen %@): it stays where the finger has it (centre %@, size %@)%@", DMSMKeyText(key), NSStringFromCGRect(whole),
+               NSStringFromCGSize(scr), NSStringFromCGPoint(k), NSStringFromCGSize(laid), fabs(k.y - c->y) >= 0.5 ? @", its top held under the menu bar" : @""]);
+    }
+    gSMAppleDragPast = YES;
+    *c = k;
+    return YES;
+}
+// Stage Manager's own drag begins (its begin question, Apple's answer yes: DMSMUnpinBegin), the finger down at p of that screen: the window under it --
+// the windows' own hit test there, top window first (DMSMTouchTarget), as SpringBoard's touch went; its card's window -- is the drag's (none read: no
+// window, the passes as before). A drag also ends the follow of a resize by hand, as our title bar's does (DMSMPastEdgeDragBegin).
+static UIView *DMSMTouchTarget(UITouch *x, UIEvent *event, UIScreen *screen, CGPoint p);   // (below, with the touch that brings a window forward)
+static void DMSMAppleDragBegins(CGPoint p, UIScreen *screen) {
+    gSMAppleDragKey = nil; gSMAppleDragPast = NO;
+    if (!DMSMFree() || !screen || !isfinite(p.x) || !isfinite(p.y)) return;
+    UIView *card = DMSMCardOfView(DMSMTouchTarget(nil, nil, screen, p));
+    gSMAppleDragKey = card ? DMSMCardKey(card) : nil;
+    gSMPastEdgeResizeKey = nil;
+}
+// iPadOS 17 and 18 (DMSM17PassEnd's `dragged`): an auto-layout item is the window Stage Manager's own drag took -- its display item's key, read quietly
+// (no display item there: no window is taken for it, the pass as before) -- and its place *p is noted as above.
+static BOOL DMSMAppleDragPass17(id item, CGPoint *p, CGSize z, CGSize container) {
+    if (!gSMAppleDragKey) return NO;
+    if (!DMSMWindowDragLive()) { gSMAppleDragKey = nil; return NO; }   // (that drag is over: its window is no longer taken for it)
+    static SEL s; static BOOL told;
+    if (!s) s = NSSelectorFromString(@"displayItem");
+    Method m = item ? class_getInstanceMethod(object_getClass(item), s) : NULL;
+    if (!m || ![DMSMSigOfMethod(m) isEqualToString:DMSMSigObj()]) {
+        if (!told) { told = YES; DMLog([NSString stringWithFormat:@"[smpast] Stage Manager's layout items name no window here (%@): its own drag fits a window inside as before", item ? NSStringFromClass(object_getClass(item)) : @"none"]); }
+        return NO;
+    }
+    id di = ((id (*)(id, SEL))objc_msgSend)(item, s);
+    NSString *k = di ? DMSMItemKey(di) : nil;
+    return [k isEqualToString:gSMAppleDragKey] && DMSMAppleDragNote(k, p, z, container);
 }
 // ---- a window's place as Stage Manager reads it, fitted into the desktop of its screen (SMFit.h, Mac test tools/test-smfit.sh) ------------------------
 // The card area of a screen's desktop (u: DMSMUsableAreaFor..., the window area under the menu bar, above the Dock): under our title bar as well;
@@ -45264,12 +45412,24 @@ static NSHashTable *gSMBars;   // (our title bars: their lights follow the front
 // its snapping (1.7.3 item 3) -- never ran on a drag longer than that, and a place asked for at the cancel came back after the lift: "springs
 // back near its start". 17 and 18 leave the bar's drag to us already. A pointer press on a resize band of the bar stays SpringBoard's live
 // resize, as our pan leaves it (DMSMPointerOnResizeEdge). SpringBoard's own grabbers and edges elsewhere are untouched.
-static DMSMTitleBar *DMSMTitleBarAt(CGPoint p, UIScreen *screen) {   // (the shown title bar at that point of that screen, in its points)
+// The shown title bar at that point of that screen (in its points) for the touch t. Where two windows' bars overlap there, the front one: the bar the
+// windows' own hit test lands in, top window first (DMSMTouchTarget), as the touch goes (1.8.9, B114: the first bar of the set was taken -- the log named
+// a window behind the one dragged, and a pointer's press was asked about that window's resize band); a third window's card in front of them: none (the
+// touch is that window's); else the first, as before.
+static DMSMTitleBar *DMSMTitleBarAt(CGPoint p, UIScreen *screen, UITouch *t) {
+    DMSMTitleBar *first = nil; NSMutableArray<DMSMTitleBar *> *more = nil;
     for (DMSMTitleBar *bar in gSMBars.allObjects) {
         if (!bar.window || bar.hidden || bar.alpha < 0.01 || (bar.window.screen ?: [UIScreen mainScreen]) != screen) continue;
-        if (CGRectContainsPoint([bar convertRect:bar.bounds toCoordinateSpace:screen.coordinateSpace], p)) return bar;
+        if (!CGRectContainsPoint([bar convertRect:bar.bounds toCoordinateSpace:screen.coordinateSpace], p)) continue;
+        if (!first) first = bar;
+        else { if (!more) more = [NSMutableArray arrayWithObject:first]; [more addObject:bar]; }
     }
-    return nil;
+    if (!more) return first;
+    UIView *hit = DMSMTouchTarget(t, nil, screen, p);
+    for (DMSMTitleBar *bar in more) if ([hit isDescendantOfView:bar]) { DM_FEATURE_MARK("sm-titlebar-front-pick"); return bar; }
+    UIView *hc = DMSMCardOfView(hit);   // (a third window's card in front of both bars there: the touch is that window's, not a title bar's -- review)
+    if (hc) { BOOL theirs = NO; for (DMSMTitleBar *bar in more) if (bar.card == hc) theirs = YES; if (!theirs) return nil; }
+    return first;
 }
 static BOOL DMSMTitleBarAtScreenPoint(CGPoint p, UIScreen *screen, UIView *hit) {   // (1.7.4 item 17: a shown title bar there that the touch is on)
     for (DMSMTitleBar *bar in gSMBars.allObjects) {
@@ -45288,7 +45448,7 @@ static BOOL DMSMTitleBarDragTouch(id manager, UIGestureRecognizer *g, UITouch *t
     if (!DMSMIsWindowDrag(manager, g)) return NO;
     UIScreen *screen = t.window.screen ?: [UIScreen mainScreen];
     CGPoint p = t.window ? [t.window convertPoint:[t locationInView:t.window] toCoordinateSpace:screen.coordinateSpace] : [t locationInView:nil];
-    DMSMTitleBar *bar = DMSMTitleBarAt(p, screen);
+    DMSMTitleBar *bar = DMSMTitleBarAt(p, screen, t);
     if (!bar) return NO;
     if (t.type == UITouchTypeIndirectPointer && DMSMPointerOnResizeEdge(bar.card)) return NO;   // (the pointer's resize band: SpringBoard's)
     DM_FEATURE_MARK("sm-titlebar-drag-own");
@@ -46001,6 +46161,69 @@ static BOOL DMSMGestureOnMenuBar(UIGestureRecognizer *g) {
     UIScreen *screen = v.window.screen ?: [UIScreen mainScreen];
     return DMSMScreenPointOnMenuBar([v convertPoint:[g locationInView:v] toCoordinateSpace:screen.coordinateSpace], screen);
 }
+// ---- a touch on the Dock is the Dock's (1.8.9, GitHub #20, the second report) ----
+// Stage Manager's window gestures -- the tap and the pointer's click that bring a window forward, the live resize, the window drag -- live in the system
+// gesture window and see every touch on the screen; they ask only which window card lies under the point. Apple's Dock hides where windows overlap it,
+// ours stays over them (a window may sit behind it, as on a Mac): a tap on a Dock icon over a window behind another also brought that window forward,
+// with the app the icon opened ("tapping one of the three Dock icons on the left changes the two windows, the others do not": a Settings window under
+// them, Safari in front). As the menu bar's (DMSMScreenPointOnMenuBar): a point the Dock takes -- a shown Dock window on that screen (the iPad's or a
+// TV's, its root passes every other point through) hit there -- is no window's. Debug /tmp/msb-sm-docktouch-asbuilt: as built before.
+static BOOL DMSMScreenPointOnDock(CGPoint sp, UIScreen *screen) {
+    if (!screen || DMTestFlag("/tmp/msb-sm-docktouch-asbuilt") || !isfinite(sp.x) || !isfinite(sp.y)) return NO;
+    for (UIWindow *w in DMAllWindows()) {
+        if (w.hidden || w.alpha < 0.01 || !w.userInteractionEnabled || (w.screen ?: [UIScreen mainScreen]) != screen) continue;
+        if (![NSStringFromClass([w class]) hasPrefix:@"SBFloatingDock"]) continue;
+        UIView *hit = [w hitTest:[w convertPoint:sp fromCoordinateSpace:screen.coordinateSpace] withEvent:nil];
+        if (hit && hit != w) return YES;
+    }
+    return NO;
+}
+static BOOL DMSMTouchOnDock(UITouch *t) {
+    UIWindow *w = [t isKindOfClass:[UITouch class]] ? t.window : nil;
+    if (!w) return NO;
+    UIScreen *screen = w.screen ?: [UIScreen mainScreen];
+    return DMSMScreenPointOnDock([w convertPoint:[t locationInView:w] toCoordinateSpace:screen.coordinateSpace], screen);
+}
+static BOOL DMSMGestureOnDock(UIGestureRecognizer *g) {
+    UIView *v = [g isKindOfClass:[UIGestureRecognizer class]] ? g.view : nil;
+    if (!v.window) return NO;
+    UIScreen *screen = v.window.screen ?: [UIScreen mainScreen];
+    return DMSMScreenPointOnDock([v convertPoint:[g locationInView:v] toCoordinateSpace:screen.coordinateSpace], screen);
+}
+// The Dock as drawn: a point on a shown Dock's platter (SpringBoard's SBFloatingDockPlatterView, the icons on it) of that screen. The Dock window
+// takes touches a little above its platter too (17.5.1: some 17 pt, its icon list's band) -- where a window ending at the Dock's line keeps the lower
+// part of its corners' resize zone.
+static BOOL DMSMScreenPointOnDockPlatter(CGPoint sp, UIScreen *screen) {
+    if (!screen || DMTestFlag("/tmp/msb-sm-docktouch-asbuilt") || !isfinite(sp.x) || !isfinite(sp.y)) return NO;
+    Class platter = objc_getClass("SBFloatingDockPlatterView");
+    if (!platter) return NO;
+    for (UIWindow *w in DMAllWindows()) {
+        if (w.hidden || w.alpha < 0.01 || !w.userInteractionEnabled || (w.screen ?: [UIScreen mainScreen]) != screen) continue;
+        if (![NSStringFromClass([w class]) hasPrefix:@"SBFloatingDock"]) continue;
+        NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w];
+        for (NSUInteger i = 0; i < todo.count && i < 2000; i++) {
+            UIView *v = todo[i];
+            if (v.hidden || v.alpha < 0.01) continue;
+            if ([v isKindOfClass:platter]) { if (CGRectContainsPoint(v.bounds, [v convertPoint:sp fromCoordinateSpace:screen.coordinateSpace])) return YES; continue; }
+            [todo addObjectsFromArray:v.subviews];
+        }
+    }
+    return NO;
+}
+// ... where a gesture went down, on the Dock as drawn: a pan's point less its travel (its recogniser begins only past its hysteresis, the finger by then
+// elsewhere -- a corner drag of a window above the Dock whose first move goes onto the Dock is the window's; one that starts on a Dock icon over a
+// corner is the Dock's), as the window drag's start (DMSMUnpinBegin); any other recogniser where it is.
+static BOOL DMSMGestureStartOnDock(UIGestureRecognizer *g) {
+    UIView *v = [g isKindOfClass:[UIGestureRecognizer class]] ? g.view : nil;
+    if (!v.window) return NO;
+    UIScreen *screen = v.window.screen ?: [UIScreen mainScreen];
+    CGPoint p = [g locationInView:v];
+    if ([g isKindOfClass:[UIPanGestureRecognizer class]]) {
+        CGPoint t = [(UIPanGestureRecognizer *)g translationInView:v];
+        if (isfinite(t.x) && isfinite(t.y)) p = CGPointMake(p.x - t.x, p.y - t.y);
+    }
+    return DMSMScreenPointOnDockPlatter([v convertPoint:p toCoordinateSpace:screen.coordinateSpace], screen);
+}
 // ---- a full-screen window under windows (1.8.1, GitHub #10, KT: as Aerial and Zetsu) ----
 // With Aerial, Zetsu and MilkyWay4 a full-screen app stays behind the windows over it when it is tapped: they stay in view, and the full-screen app
 // gets the menu bar and the keyboard (DMRaiseStageForBundle: "reclaimed the status bar"); its Dock icon, the Mac Switcher, Command-Tab or the Window
@@ -46072,7 +46295,8 @@ static void DMSMFullScreenActivate(NSString *key) {
 static NSString *gSMPendingBundle;   // (the window touched: its key)
 // The view a touch is for, top window first. UIKit's own choice when it made one in a real window: the touch's window and view (a touch UIKit gave
 // the Dock, the menu bar, a menu or Control Center stays theirs). Only when it went to the system gesture window (or none): OUR hit test, over the
-// windows that can hold a window card or sit above one -- with the touch's real event. It used to hit-test EVERY SpringBoard window with no event
+// windows that can hold a window card or sit above one -- with the touch's real event (no touch and no event at the start of Stage Manager's own window
+// drag and for overlapping title bars, 1.8.9 B114: the windows hit-tested are these known ones all the same). It used to hit-test EVERY SpringBoard window with no event
 // (review S5: native M1/M2 SpringBoard has windows the iPad 2 never had -- Pencil hover, the Stage Manager strip -- whose hit tests may rely on it).
 static UIView *DMSMTouchTarget(UITouch *x, UIEvent *event, UIScreen *screen, CGPoint p) {
     UIWindow *tw = x.window;
@@ -47967,6 +48191,7 @@ static BOOL DMSMTapForwardBegin(id self, SEL _cmd, id g) {
     if (DMSMOverWindows()) return NO;
     if (DMSMFree() && DMSMGestureOnOurLights(g)) return NO;   // (our lights: the light's own action, in place)
     if (DMSMFree() && DMSMGestureOnMenuBar(g)) { DM_FEATURE_MARK("sm-menubar-tap-not-forward"); return NO; }   // (the menu bar's: DMSMScreenPointOnMenuBar)
+    if (DMSMFree() && DMSMGestureOnDock(g)) { DM_FEATURE_MARK("sm-dock-tap-not-forward"); return NO; }   // (the Dock's: DMSMScreenPointOnDock, GitHub #20)
     if (DMSMFree() && DMSMGestureFullScreenOwn(g)) return NO;   // (a full-screen window stays behind the windows over it: DMSMFullScreenActivate at our lift)
     if (DMSMFree() && DMSMOurMenuOpenOn(DMSMGestureScreen(g))) { DM_FEATURE_MARK("sm-menu-tap-not-forward"); return NO; }
     if (DMSMFree() && MSBDGuidedAccessActive()) return NO;   // (a Guided Access session: no other window comes forward -- 1.3.7, audit M-7)
@@ -47979,12 +48204,20 @@ static BOOL DMSMTapForwardTouch(id self, SEL _cmd, id g, id touch) {
     if (DMSMOverWindows() || (DMSMFree() && (DMSMOurMenuOpenOn([touch isKindOfClass:[UITouch class]] ? DMSMTouchScreen(touch) : DMSMGestureScreen(g)) || MSBDGuidedAccessActive()))) return NO;
     if (DMSMFree() && [touch isKindOfClass:[UITouch class]] && DMSMTouchOnOurLights(touch)) { DM_FEATURE_MARK("sm-lights-act-in-place"); return NO; }   // (the light's, in place)
     if (DMSMFree() && [touch isKindOfClass:[UITouch class]] && (DMSMTouchOnMenuBar(touch) || DMSMTouchFullScreenOwn(touch))) return NO;   // (the menu bar's; a full-screen window under windows: its own)
+    if (DMSMFree() && [touch isKindOfClass:[UITouch class]] && DMSMTouchOnDock(touch)) {   // (the Dock's: DMSMScreenPointOnDock, GitHub #20)
+        DM_FEATURE_MARK("sm-dock-touch-not-forward");
+#if DEBUG   // (Apple's own answer to such a touch, read on the devices: 1 on 16.7.7, the window under the icon came forward; 0 on 17.5.1)
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[smchrome] a touch on the Dock: Stage Manager's tap-to-front left out");
+#endif
+        return NO;
+    }
     return o_SMTapForwardTouch(self, _cmd, g, touch);
 }
 // (a pointer's click-down on a window behind brings it forward through its own gesture: not on our lights either)
 static BOOL (*o_SMClickForwardBegin)(id, SEL, id);
 static BOOL DMSMClickForwardBegin(id self, SEL _cmd, id g) {
     if (DMSMFree() && (DMSMGestureOnOurLights(g) || DMSMGestureOnMenuBar(g))) return NO;   // (our lights, the menu bar)
+    if (DMSMFree() && DMSMGestureOnDock(g)) { DM_FEATURE_MARK("sm-dock-click-not-forward"); return NO; }   // (the Dock's, GitHub #20)
     if (DMSMFree() && DMSMOurMenuOpenOn(DMSMGestureScreen(g))) { DM_FEATURE_MARK("sm-menu-click-not-forward"); return NO; }   // (one of our menus open: the click is the menu's, as a finger's tap)
     if (DMSMFree() && DMSMGestureFullScreenOwn(g)) {   // (a full-screen window under windows: it stays behind them and becomes the active one, as with a finger's tap)
         NSString *k = [DMSMFullScreenUnderWindows() copy];
@@ -47996,6 +48229,7 @@ static BOOL DMSMClickForwardBegin(id self, SEL _cmd, id g) {
 static BOOL DMSMLiveResizeBegin(id self, SEL _cmd, id g) {   // (the Mac Switcher's view; one of our menus open: the touch is the menu's, as for the window drag below)
     if (DMSMOverWindows()) return NO;
     if (DMSMFree() && DMSMOurMenuOpenOn(DMSMGestureScreen(g))) { DM_FEATURE_MARK("sm-menu-no-live-resize"); return NO; }
+    if (DMSMFree() && DMSMGestureStartOnDock(g)) { DM_FEATURE_MARK("sm-dock-no-live-resize"); return NO; }   // (begun on the Dock over a window's corner: the Dock's, GitHub #20)
     return o_SMLiveResizeBegin(self, _cmd, g);
 }
 // Stage Manager's window drag takes a touch on the top card that holds the point and begins in that card's top part, up to the screen's edge above it (-[SBFluidSwitcherGestureManager
@@ -48011,6 +48245,8 @@ static BOOL DMSMWindowDragLeavesTouch(id manager, UIGestureRecognizer *g, UITouc
     if (!t || !g || !DMSMFree() || !DMSMIsWindowDrag(manager, g)) return NO;
     BOOL onBar = DMSMTouchOnMenuBar(t), own = !onBar && DMSMTouchFullScreenOwn(t);
     BOOL menu = !onBar && !own && DMSMOurMenuOpenOn(DMSMTouchScreen(t));   // (one of our menus, cards or dialogs is open on its screen: every touch there is its own, see above)
+    BOOL dock = !onBar && !own && !menu && DMSMTouchOnDock(t);   // (a touch on the Dock over a window's top part: the Dock's, GitHub #20)
+    if (dock) { DM_FEATURE_MARK("sm-dock-drag-not-window"); if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[smchrome] a touch on the Dock: Stage Manager's window drag left out"); return YES; }
     if (onBar) DM_FEATURE_MARK("sm-menubar-drag-not-window");
     if (own) DM_FEATURE_MARK("sm-full-screen-no-window-drag");
     if (menu) DM_FEATURE_MARK("sm-menu-drag-not-window");
@@ -48022,15 +48258,18 @@ static BOOL DMSMWindowDragLeavesTouch(id manager, UIGestureRecognizer *g, UITouc
 static BOOL (*o_SMUnpinBegin)(id, SEL, id);
 static BOOL DMSMUnpinBegin(id self, SEL _cmd, id g) {
     if (DMSMOverWindows()) return NO;
+    CGPoint start = CGPointMake(NAN, NAN); UIScreen *scr = nil;
     if (DMSMFree() && [g isKindOfClass:[UIPanGestureRecognizer class]] && ((UIGestureRecognizer *)g).view) {
         UIPanGestureRecognizer *pan = g;
         CGPoint now = [pan locationInView:pan.view], moved = [pan translationInView:pan.view];
-        UIScreen *scr = pan.view.window.screen ?: [UIScreen mainScreen];
-        CGPoint start = [pan.view convertPoint:CGPointMake(now.x - moved.x, now.y - moved.y) toCoordinateSpace:scr.coordinateSpace];
+        scr = pan.view.window.screen ?: [UIScreen mainScreen];
+        start = [pan.view convertPoint:CGPointMake(now.x - moved.x, now.y - moved.y) toCoordinateSpace:scr.coordinateSpace];
         if (start.x <= 20.0) { DM_FEATURE_MARK("sm-no-edge-window-drag"); return NO; }
         if (DMSMScreenPointOnMenuBar(start, scr)) { DM_FEATURE_MARK("sm-menubar-drag-not-window"); return NO; }   // (a slide along the menu bar: the bar's)
     }
-    return o_SMUnpinBegin(self, _cmd, g);
+    BOOL r = o_SMUnpinBegin(self, _cmd, g);
+    if (r) DMSMAppleDragBegins(start, scr);   // (1.8.9, B114: the window it drags, for a window let go past an edge -- DMSMAppleDragNote)
+    return r;
 }
 // The strip is hidden while our engine runs (prefersStripHidden), but a stage LEAVING the screen still went into it: its window cards and app icons
 // flew from their places to the strip's slot past the left edge, fading in (1.4 logic test I-5 / O-1: at the window cap the full desktop's stage
@@ -48820,12 +49059,18 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
         }
     }
     if (!DMSMFree()) return v;
-    return DMSMFineGrid(v, CGRectGetWidth(DMSMContainerBoundsOf(self)), 0);
+    CGRect cb = DMSMContainerBoundsOf(self);
+    id l = DMSMFineGrid(v, CGRectGetWidth(cb), 0);
+    DMSMPastEdgeGridNote(cb.size, 0, l);   // (1.8.9: its first width, the narrowest window Stage Manager lays out there -- DMSMPastEdgeLaid)
+    return l;
 }
 - (id)gridHeights {
     id v = %orig;
     if (!DMSMFree()) return v;
-    return DMSMFineGrid(v, CGRectGetHeight(DMSMContainerBoundsOf(self)), 1);
+    CGRect cb = DMSMContainerBoundsOf(self);
+    id l = DMSMFineGrid(v, CGRectGetHeight(cb), 1);
+    DMSMPastEdgeGridNote(cb.size, 1, l);   // (1.8.9: its first height, the shortest window Stage Manager lays out there -- DMSMPastEdgeLaid)
+    return l;
 }
 %end
 %hook SBSwitcherChamoisSettings
@@ -48869,6 +49114,7 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 // runs right before it, and cleared when the pass ends.
 static BOOL gSMLoneCenterNext = NO;
 static BOOL gSMLoneCenterBoth = NO;   // (iPadOS 16.0's pass centres the lone window's x too: then both are kept -- %group SMLayout160)
+static id gSMDragItem16;   // (1.8.9, B114: the window the layout pass running now has under a drag -- its draggingItem; DMSMPastEdgeBefore16)
 // iPadOS 16.1+'s layout pass (the "auto layout" group's 16.1 variant: the tested one, always chosen on 16.1 and later): installed only where the
 // self-check chose it, so on 16.0 nothing is hooked that is not there (16.0's own pass: SMLayout160; 1.3.4 logic test L3).
 %group SMLayout161
@@ -48879,7 +49125,9 @@ static BOOL gSMLoneCenterBoth = NO;   // (iPadOS 16.0's pass centres the lone wi
 }
 - (id)_modelByPerformingAutoLayoutForModel:(id)m chamoisLayoutAttributes:(id)a draggingItem:(id)d modelBeforeDragging:(id)b floatingDockHeight:(double)dock bounds:(CGRect)r screenScale:(double)sc prefersStripHidden:(BOOL)sh prefersDockHidden:(BOOL)dh stageInset:(UIEdgeInsets)inset {
     gSMLoneCenterNext = NO;
+    id wasDrag = gSMDragItem16; gSMDragItem16 = d;
     id out = %orig;
+    gSMDragItem16 = wasDrag;
     gSMLoneCenterNext = NO;
     return out;
 }
@@ -48975,7 +49223,8 @@ static void DMSMConstrainEdges16(id m, CGRect area, int vertical) {
 // by hand of one is changing too, DMSMPastEdgeHeld) and given back after it (and after the rule above). Its top above the area's top, or the container
 // unknown: kept inside as any other. nil: no such window.
 static NSArray<NSArray *> *DMSMPastEdgeBefore16(id m, CGRect area) {
-    if (!gSMPastEdge.count || !DMSMFree() || !DMSMRectSane(area)) return nil;
+    id dragged = gSMDragItem16 && DMSMWindowDragLive() ? gSMDragItem16 : nil;   // (1.8.9, B114: the window under Stage Manager's own drag, DMSMAppleDragNote)
+    if ((!gSMPastEdge.count && !dragged) || !DMSMFree() || !DMSMRectSane(area)) return nil;
     SEL itemsS = NSSelectorFromString(@"items"), sizeS = NSSelectorFromString(@"sizeForItem:"), centerS = NSSelectorFromString(@"centerForItem:");
     SEL setS = NSSelectorFromString(@"setCenter:forItem:"), contS = NSSelectorFromString(@"containerBounds");
     if (!DMSMSigOK(m, itemsS, DMSMSigObj(), "items") || !DMSMSigOK(m, sizeS, DMSMSigSizeFor(), "sizeForItem:") || !DMSMSigOK(m, centerS, DMSMSigCenterFor(), "centerForItem:")
@@ -48988,7 +49237,9 @@ static NSArray<NSArray *> *DMSMPastEdgeBefore16(id m, CGRect area) {
     NSMutableArray<NSArray *> *held = nil;
     for (id it in list) {
         CGSize s = ((CGSize (*)(id, SEL, id))objc_msgSend)(m, sizeS, it);
-        CGPoint c = ((CGPoint (*)(id, SEL, id))objc_msgSend)(m, centerS, it), k = c;
+        CGPoint c = ((CGPoint (*)(id, SEL, id))objc_msgSend)(m, centerS, it);
+        if (dragged && [it isEqual:dragged]) (void)DMSMAppleDragNote(DMSMItemKey(it), &c, s, cb.size);   // (where the finger has it, held by the rule: past an edge, recorded there)
+        CGPoint k = c;
         // (its top as kept under the area's top: one recorded at the top edge while the menu bar hid itself is kept under the bar again, past its edge
         //  still -- 1.8.8.4; a window whose kept top is above the area is clamped as before)
         if (!isfinite(c.x) || !isfinite(c.y) || !DMSMPastEdgeHeldAt(c, s, cb.size, &k) || k.y - s.height / 2.0 < CGRectGetMinY(area) - 0.5) continue;
@@ -49301,6 +49552,7 @@ static void DMAutoHideSMRetop(BOOL layout, BOOL active, BOOL modeChanged) {
 #include "SMAfterHome.h"     // (the desktop's last window leaves the App Switcher once the Home transition is over: 1.5.2, the black ghost cards)
 #include "SMCards.h"         // (iPadOS's App Switcher shows each window of a desktop as a card of its own, as the other engines: 1.7.1 item 6)
 #include "SMResizeEdges.h"   // (a window's top resize zone at the title bar's outer edge, pointer: 1.5.2 item 7)
+#include "ResizeFact.h"      // (macOS's resize pointers, SpringBoard's half: which resize place is under the pointer, 1.8.9 F51)
 #include "SMResizeAnchor.h"   // (a corner or side drag keeps the window's opposite corner, iPadOS 16 and 17: 1.7.0)
 #include "SpotlightBridge.h"   // (our sections in Apple's Spotlight -- Actions, Windows -- SpringBoard's half: 1.4.3, S-3)
 // The windows' corner radius (Stage Manager's own: rounder than a Mac window): under whichever name this iPadOS has (stageCornerRaddii, sic,
@@ -49360,7 +49612,9 @@ static void DMAutoHideSMRetop(BOOL layout, BOOL active, BOOL modeChanged) {
 - (id)modelForPreferredModel:(id)m initialStageFrame:(CGRect)f layoutAttributes:(id)a draggingItem:(id)d modelBeforeDragging:(id)b {
     gSMLoneCenterNext = NO; gSMLoneCenterBoth = NO;
     DMSMPass160Begin();
+    id wasDrag = gSMDragItem16; gSMDragItem16 = d;
     id out = %orig;
+    gSMDragItem16 = wasDrag;
     gSMLoneCenterNext = NO; gSMLoneCenterBoth = NO;
     DMSMPass160End();   // (inside the calculator: its group shift comes next)
     return out;
@@ -49476,6 +49730,7 @@ static __thread int gSM17Depth = 0;   // (_performAutoLayout... runs itself agai
     BOOL haveContainer = DMSMCfgBounds(cfg, &container);
     DMSM17Pass pass = DMSM17PassBegin(space, haveContainer, container);
     pass.kept = DMSMPastEdgeHeldAt;   // (1.8.8.3: a window the user let go partly past the screen's edge, at that place, keeps it: SMPastEdge.h)
+    pass.dragged = DMSMAppleDragPass17;   // (1.8.9, B114: and the window under Stage Manager's own drag, where the finger has it -- DMSMAppleDragNote)
     BOOL lone = pass.loneHidden;
     gSM17Depth++;
     CGRect area = %orig;

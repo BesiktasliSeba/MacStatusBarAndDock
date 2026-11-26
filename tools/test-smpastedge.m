@@ -201,6 +201,32 @@ static void TAppleConstrain(TModel *m, CGRect area, int vertical) {
 static BOOL gTOnResizeEdge;   // (the pointer marks a resize band: SpringBoard's live resize, not the bar's drag)
 static BOOL DMSMPointerOnResizeEdge(UIView *card) { (void)card; return gTOnResizeEdge; }
 
+// ---- 1.8.9 (B114): Stage Manager's own window drag -- its transaction, as SMGestureHook.h lists SpringBoard's running ones; a window's key (16's model
+//      items and a 17 / 18 layout item's display item are their windows' keys here); the signature reader DMSMAppleDragPass17 asks quietly
+@interface SBWindowDragGestureWorkspaceTransaction : NSObject
+@property (nonatomic) BOOL complete;
+@end
+@implementation SBWindowDragGestureWorkspaceTransaction
+- (bool)isComplete { return self.complete; }   // (bool: 'B', as BOOL is on the iPads' arm64 -- this Mac's BOOL may be a char)
+@end
+static NSHashTable *gSMGestureTxs;
+static BOOL DMSMGTGetter(id t, SEL s, char ret) {   // (SMGestureHold.h's: a getter of no arguments with that return type)
+    Method m = t ? class_getInstanceMethod(object_getClass(t), s) : NULL;
+    if (!m || method_getNumberOfArguments(m) != 2) return NO;
+    char r[8] = {0}; method_getReturnType(m, r, sizeof r);
+    return r[0] == ret;
+}
+static NSString *DMSMItemKey(id item) { return [item isKindOfClass:[NSString class]] ? item : nil; }
+static NSString *DMSMSigOfMethod(Method m) { const char *t = m ? method_getTypeEncoding(m) : NULL; return t && t[0] == '@' ? DMSMSigObj() : @"other"; }
+@interface TItem17 : NSObject   // (an iPadOS 17 / 18 auto-layout item: its display item names its window)
+@property (nonatomic, copy) NSString *key;
+@end
+@implementation TItem17
+- (id)displayItem { return self.key; }
+@end
+@interface TItem17Unnamed : NSObject @end   // (one with no display item)
+@implementation TItem17Unnamed @end
+
 #include "spe-decl.inc"   // (kSMBarH, the drag's globals, the @interface DMSMTitleBar: StatusBar.x's)
 #ifdef SPE_REAL_DESK
 #include "spe-desk.inc"   // (StatusBar.x's DMTopLimit, DMSMUsableAreaForIdentity, the _statusBarHeight answer and DMSMStageTopByDisplay)
@@ -208,6 +234,8 @@ static BOOL DMSMPointerOnResizeEdge(UIView *card) { (void)card; return gTOnResiz
 #include "spe-glue.inc"   // (the past-edge glue, DMSMCardDesk, DMSMAttrsFitScreen, iPadOS 16's before / after: StatusBar.x's)
 @implementation DMSMTitleBar
 #include "spe-pan.inc"    // (-gestureRecognizer:shouldReceiveTouch: and -dm_pan:)
+// (1.8.9: the menu bar's retop record follow, StatusBar.x DMSMPastEdgeMoved -- cut into the glue here; test-autohidetop.sh cuts it after this file)
+static void DMSMPastEdgeMoved(CGRect was, CGRect now, CGSize scr);
 @end
 
 static int gFails, gChecks;
@@ -304,6 +332,28 @@ static CGPoint Step16(CGPoint c, CGSize s, CGRect area, int vertical, NSArray **
     DMSMPastEdgeAfter16(m, held);
     if (heldOut) *heldOut = held;
     return [m centerForItem:@"A"];
+}
+
+// 1.8.9 (B114): one of iPadOS 16's layout passes with one window `item` at c, s (its model as Stage Manager hands it over): its dragging item (`dragged`,
+// as -_modelByPerformingAutoLayoutForModel:... names it) set for the pass, our before, Stage Manager's own step on both axes, our after. Where it ends.
+static CGPoint Pass16(NSString *item, CGPoint c, CGSize s, CGRect area, CGSize container, BOOL dragged) {
+    TModel *m = [TModel new];
+    m.items = @[item]; m.containerBounds = CGRectMake(0, 0, container.width, container.height);
+    m.centers = [@{item: [NSValue valueWithCGPoint:c]} mutableCopy]; m.sizes = [@{item: [NSValue valueWithCGSize:s]} mutableCopy];
+    gSMDragItem16 = dragged ? item : nil;
+    for (int vertical = 1; vertical >= 0; vertical--) {   // (as the device runs it: our before and after around each of Apple's two steps, so the note runs twice)
+        NSArray *held = DMSMPastEdgeBefore16(m, area);
+        TAppleConstrain(m, area, vertical);
+        DMSMPastEdgeAfter16(m, held);
+    }
+    gSMDragItem16 = nil;
+    return [m centerForItem:item];
+}
+static SBWindowDragGestureWorkspaceTransaction *gTDragTx;   // (Stage Manager's own window drag running: its transaction in SMGestureHook.h's list)
+static void AppleDragLive(BOOL on) {
+    gSMGestureTxs = [NSHashTable weakObjectsHashTable];
+    gTDragTx = on ? [SBWindowDragGestureWorkspaceTransaction new] : nil;
+    if (gTDragTx) [gSMGestureTxs addObject:gTDragTx];
 }
 
 int main(void) {
@@ -812,6 +862,181 @@ int main(void) {
         zp = CGSizeMake(600, 400); zc = CGPointMake(2100, 400);
         DMSMJoinOwnPlace(kNotes, &zp, &zc, CGSizeMake(1920, 1080), CGRectMake(0, 24, 1920, 954));
         Check(NearPt(zc, 2100, 400), @"join: the TV's window back at its place past the TV's edge");
+
+        // ==== 9. 1.8.9 (GitHub #20): a window asked smaller than Stage Manager's smallest window -- App Window Sizes' Small in landscape on an iPad
+        //      Air (1180 x 820, a 590 x 396 card under our bar) where the size grid's heights start at 480 (a native iPadOS 16 iPad: Apple's own list) --
+        //      is laid out 480 tall while its attributes keep 396: known by the laid-out size in the record and every lookup ====
+        Check(CGSizeEqualToSize(DMSMPastEdgeLaidOut(CGSizeMake(590, 396), CGSizeMake(320, 480)), CGSizeMake(590, 480))
+              && CGSizeEqualToSize(DMSMPastEdgeLaidOut(CGSizeMake(300, 700), CGSizeMake(320, 480)), CGSizeMake(320, 700))
+              && CGSizeEqualToSize(DMSMPastEdgeLaidOut(CGSizeMake(600, 500), CGSizeMake(320, 480)), CGSizeMake(600, 500))
+              && CGSizeEqualToSize(DMSMPastEdgeLaidOut(CGSizeMake(590, 396), CGSizeZero), CGSizeMake(590, 396))
+              && CGSizeEqualToSize(DMSMPastEdgeLaidOut(CGSizeMake(590, 396), CGSizeMake(NAN, NAN)), CGSizeMake(590, 396)),
+              @"laid out: a size under the grid's first sizes raised to them on each axis; at or above them, none read (0) or not a number: as asked");
+        const CGSize air = CGSizeMake(1180, 820);
+        gSMGridFirstBySize = nil;
+        DMSMPastEdgeGridNote(air, 0, @[@320, @321, @322]);
+        DMSMPastEdgeGridNote(air, 1, @[@480, @481]);
+        DMSMPastEdgeGridNote(air, 1, @[@"480"]);   // (not numbers: nothing noted)
+        DMSMPastEdgeGridNote(air, 2, @[@999]);     // (no such axis)
+        DMSMPastEdgeGridNote(CGSizeMake(820, 1180), 1, @[@300]);   // (the other shape: its own)
+        Check(CGSizeEqualToSize(DMSMPastEdgeGridFirst(air), CGSizeMake(320, 480)) && CGSizeEqualToSize(DMSMPastEdgeGridFirst(CGSizeMake(820, 1180)), CGSizeMake(0, 300))
+              && CGSizeEqualToSize(DMSMPastEdgeGridFirst(land), CGSizeZero),
+              @"the grid's first sizes noted per container size and axis, as the hooks hand the lists over (other lists, axes and screens: nothing)");
+        ClearRecords();
+        CGRect smallCard = CGRectMake(295, 158.5, 590, 480);   // (Small asked: the card 295, 200.5, 590 x 396; laid out 480 tall about the same centre)
+        Setup(air, kClock, smallCard, NO);
+        gTWindows[kClock] = Attrs(CGSizeMake(590, 396), CGPointMake(590, 398.5), air);   // (its attributes keep the size asked)
+        Drag(Steps(CGPointMake(-500, 0)), CGPointMake(-500, 0));   // (past the left edge: the card at -205)
+        Check(RecIs(kClock, 90, 398.5, 590, 480, 1180, 820) && [gTMarks containsObject:@"sm-past-edge-laid-size"] && LogCount(@"its attributes ask {590, 396}") == 1,
+              @"#20: let go past the left edge: recorded at the size Stage Manager lays it out at (590 x 480), the size asked named in the line");
+        {   // (iPadOS 16: Stage Manager's own step around ours, the model at the laid-out size)
+            TModel *m9 = [TModel new];
+            m9.items = @[@"A"]; m9.containerBounds = CGRectMake(0, 0, 1180, 820);
+            m9.centers = [@{@"A": [NSValue valueWithCGPoint:CGPointMake(90, 398.5)]} mutableCopy]; m9.sizes = [@{@"A": [NSValue valueWithCGSize:CGSizeMake(590, 480)]} mutableCopy];
+            CGRect area9 = CGRectMake(0, 48, 1180, 701);
+            NSArray *h9 = DMSMPastEdgeBefore16(m9, area9);
+            TAppleConstrain(m9, area9, 0); TAppleConstrain(m9, area9, 1);
+            DMSMPastEdgeAfter16(m9, h9);
+            Check(h9.count == 1 && NearPt([m9 centerForItem:@"A"], 90, 398.5),
+                  [NSString stringWithFormat:@"#20, 16: Stage Manager's step (the window 590 x 480 in its model) keeps it past the left edge (%.1f; fitted inside it was 295)", [m9 centerForItem:@"A"].x]);
+        }
+        CGPoint k9 = CGPointZero;
+        Check(DMSMPastEdgeHeldAt(CGPointMake(90, 398.5), CGSizeMake(590, 480), air, &k9) && NearPt(k9, 90, 398.5),
+              @"#20, 17 and 18: the pass's callback (the item 590 x 480) keeps it where it was let go");
+        TAttrs *asked9 = Attrs(CGSizeMake(590, 396), CGPointMake(90, 398.5), air);
+        TAttrs *req9 = DMSMAttrsFitScreen(asked9, nil, NO, @"t");
+        Check(req9 == asked9 || Near(req9.center.x * 1180, 90), @"#20: our request (the attributes' 590 x 396) keeps it there too");
+        CGSize zp9 = CGSizeMake(590, 396); CGPoint zc9 = CGPointMake(90, 398.5);
+        DMSMJoinOwnPlace(kClock, &zp9, &zc9, air, CGRectMake(0, 24, 1180, 725));
+        Check(NearPt(zc9, 90, 398.5) && Near(zp9.height, 396), @"#20: minimized and opened again (the join's 590 x 396): back at its place past the edge, its size as asked");
+        DMSMPastEdgeResizeBegan(kDMSMPastEdgeRight, CGRectMake(-205, 158.5, 590, 480));   // (the card as drawn: 480 tall)
+        Check([gSMPastEdgeResizeKey isEqualToString:kClock] && DMSMPastEdgeHeld(CGPointMake(115, 398.5), CGSizeMake(640, 480), air) && RecIs(kClock, 115, 398.5, 640, 480, 1180, 820),
+              @"#20: resized by hand from its right side (the card as drawn, 480 tall): followed, kept past the edge");
+        {   // (near the top: the laid-out window reaches 42 pt higher than the size asked -- our request keeps its laid-out top under the menu bar, as the passes do)
+            ClearRecords();
+            Setup(air, kClock, CGRectMake(295, 60, 590, 480), NO);
+            gTWindows[kClock] = Attrs(CGSizeMake(590, 396), CGPointMake(590, 300), air);
+            Drag(Steps(CGPointMake(-500, 0)), CGPointMake(-500, 0));   // (recorded at (90, 300); its laid-out bar's top 36, under the 24 pt menu bar)
+            gTIPadTop = 50.0;   // (a taller menu bar since: the laid-out bar's top must be at 50 or lower, the centre at 314)
+            TAttrs *top9 = DMSMAttrsFitScreen(Attrs(CGSizeMake(590, 396), CGPointMake(90, 300), air), nil, NO, @"t");
+            Check(Near(top9.center.y * 820, 314) && Near(top9.center.x * 1180, 90),
+                  [NSString stringWithFormat:@"#20: a taller menu bar since: our request keeps the laid-out top under it (centre y %.1f), past the edge still", top9.center.y * 820]);
+            gTIPadTop = 24.0;
+        }
+        {   // (the menu bar hides itself or comes back and our retop moves the window by its attributes -- 590 x 396 asked, the whole window 420 tall:
+            //  DMSMPastEdgeMoved finds the record by the laid-out size and it follows, so the window stays past the edge at its new top)
+            ClearRecords();
+            Setup(air, kClock, smallCard, NO);
+            gTWindows[kClock] = Attrs(CGSizeMake(590, 396), CGPointMake(590, 398.5), air);
+            Drag(Steps(CGPointMake(-500, 0)), CGPointMake(-500, 0));   // (recorded at (90, 398.5), 590 x 480)
+            DMSMPastEdgeMoved(CGRectMake(-205, 176.5, 590, 420), CGRectMake(-205, 152.5, 590, 420), air);   // (24 pt up: the bar hid itself)
+            Check(RecIs(kClock, 90, 374.5, 590, 480, 1180, 820) && LogCount(@"moved with the menu bar's room") == 1,
+                  @"#20: moved 24 pt up by the menu bar's retop (its attributes' 590 x 396): the record follows, by the laid-out size");
+        }
+        ClearRecords();
+        gSMGridFirstBySize = nil;   // (no list read yet for this screen: as before)
+        Setup(air, kClock, smallCard, NO);
+        gTWindows[kClock] = Attrs(CGSizeMake(590, 396), CGPointMake(590, 398.5), air);
+        Drag(Steps(CGPointMake(-500, 0)), CGPointMake(-500, 0));
+        Check(RecIs(kClock, 90, 398.5, 590, 396, 1180, 820) && LogCount(@"its attributes ask") == 0, @"#20: no size list read for the screen yet: recorded at the size asked, as before");
+        DMSMPastEdgeGridNote(air, 0, @[@320]); DMSMPastEdgeGridNote(air, 1, @[@300]);
+        ClearRecords();
+        Setup(air, kClock, CGRectMake(295, 200, 600, 400), NO);
+        Drag(Steps(CGPointMake(-500, 0)), CGPointMake(-500, 0));
+        Check(RecIs(kClock, 95, 400, 600, 400, 1180, 820) && LogCount(@"its attributes ask") == 0, @"#20: a window at or above the grid's first sizes: recorded as before, no note");
+        gSMGridFirstBySize = nil;
+    }
+    {   // ==== 10. 1.8.9 (B114): Stage Manager's own window drag -- the window's top strip (on iPadOS 16 the band just under our title bar) -- keeps a
+        //      window where the finger lets it go past an edge, by the same rule as our title bar's drag (16.7.7 and 17.5.1: it was fitted inside) ====
+        const CGSize ipad2 = CGSizeMake(1024, 768);   // (16.7.7 in landscape: the desktop 24..649 here, a 24 pt menu bar, the Dock's line at 768 - 117 - 2)
+        const CGRect area10 = CGRectMake(0, 48, 1024, 601);   // (Stage Manager's stage area: under our bar, down to the Dock's line)
+        const CGSize st = CGSizeMake(799, 590);   // (Settings with no saved size)
+        NSString *const kSet = @"com.apple.Preferences|sceneID:com.apple.Preferences-default";
+        ClearRecords(); Setup(ipad2, kSet, CGRectMake(113, 56, 799, 590), NO); gTPresent = [NSSet setWithObjects:kSet, kNotes, nil];
+        AppleDragLive(YES);
+        CGPoint a = Pass16(kSet, CGPointMake(884.5, 350), st, area10, ipad2, YES);   // (16.7.7's let go: x 485..1284, past the right edge)
+        Check(NearPt(a, 884.5, 350) && RecIs(kSet, 884.5, 350, 799, 590, 1024, 768) && [gTMarks containsObject:@"sm-past-edge-apple-drag"] && LogCount(@"in Stage Manager's own drag past the screen's edge") == 1,
+              [NSString stringWithFormat:@"16: the window under Stage Manager's own drag let go past the right edge: it stays there, recorded (%.1f; fitted inside it was 624.5)", a.x]);
+        AppleDragLive(NO);
+        a = Pass16(kSet, CGPointMake(884.5, 350), st, area10, ipad2, NO);
+        Check(NearPt(a, 884.5, 350), @"16: ... the passes after the drag (no dragging item, no drag running) keep it there by its record");
+        AppleDragLive(YES);
+        a = Pass16(kNotes, CGPointMake(904.5, 350), st, area10, ipad2, NO);   // (records go by place: another place than the dragged window's)
+        Check(Near(a.x, 624.5) && !Rec(kNotes), @"16: another window at a place past the edge in that drag's pass (not its dragging item): fitted inside as before");
+        AppleDragLive(NO);
+        ClearRecords(); gTPresent = [NSSet setWithObjects:kSet, nil];
+        a = Pass16(kSet, CGPointMake(884.5, 350), st, area10, ipad2, YES);
+        Check(Near(a.x, 624.5) && !Rec(kSet), @"16: a dragging item with no window drag of Stage Manager's running (another kind of drag): fitted inside as before");
+        AppleDragLive(YES);
+        (void)Pass16(kSet, CGPointMake(884.5, 350), st, area10, ipad2, YES);
+        a = Pass16(kSet, CGPointMake(600, 350), st, area10, ipad2, YES);   // (dragged back inside: x 200.5..999.5)
+        Check(NearPt(a, 600, 350) && !Rec(kSet) && LogCount(@"inside the screen, no longer past an edge") == 1, @"16: dragged back inside the screen: its record goes, it stays where it is let go inside");
+        a = Pass16(kSet, CGPointMake(884.5, 300), st, area10, ipad2, YES);   // (its bar over the menu bar: the card's top at 5)
+        Check(NearPt(a, 884.5, 343) && RecIs(kSet, 884.5, 343, 799, 590, 1024, 768) && LogCount(@"its top held under the menu bar") == 1,
+              [NSString stringWithFormat:@"16: let go past the right edge with its bar over the menu bar: its top held under the bar, as our title bar's drag holds it (%.1f, %.1f)", a.x, a.y]);
+        a = Pass16(kSet, CGPointMake(200, 350), st, area10, ipad2, YES);
+        Check(NearPt(a, 200, 350) && RecIs(kSet, 200, 350, 799, 590, 1024, 768), @"16: past the left edge: it stays there");
+        a = Pass16(kSet, CGPointMake(500, 560), st, area10, ipad2, YES);   // (the card to 855: past the bottom)
+        Check(NearPt(a, 500, 560) && RecIs(kSet, 500, 560, 799, 590, 1024, 768), [NSString stringWithFormat:@"16: past the bottom edge: it stays there (%.1f, %.1f)", a.x, a.y]);
+        gTDockSide = 1;
+        ClearRecords(); gTPresent = [NSSet setWithObjects:kSet, nil];
+        a = Pass16(kSet, CGPointMake(884.5, 350), st, area10, ipad2, YES);
+        Check(Near(a.x, 624.5) && !Rec(kSet), @"16: the Dock at a side: nothing stays past an edge (fitted inside), as with our title bar's drag");
+        gTDockSide = 0;
+        {   // (review: our full screen -- as big as the container -- moved by Stage Manager's own drag: never taken for past the bottom (its bar under the
+            //  menu bar would reach 48 pt past it), Stage Manager's step as before; a drag whose transaction completed is over)
+            ClearRecords(); gTPresent = [NSSet setWithObjects:kSet, nil];
+            CGPoint f = Pass16(kSet, CGPointMake(512, 384), ipad2, CGRectMake(0, 0, 1024, 768), ipad2, YES);
+            Check(NearPt(f, 512, 384) && !Rec(kSet) && gSMPastEdge.count == 0, [NSString stringWithFormat:@"16: our full screen under Stage Manager's own drag: not recorded, where Stage Manager has it (%.1f, %.1f)", f.x, f.y]);
+            gTDragTx.complete = YES;
+            a = Pass16(kSet, CGPointMake(884.5, 350), st, area10, ipad2, YES);
+            Check(Near(a.x, 624.5) && !Rec(kSet), @"16: the drag's transaction complete (not out of the list yet): no longer its drag, fitted inside as before");
+            gTDragTx.complete = NO;
+        }
+        {   // (a window our title bar let go past the edge, then moved on by Stage Manager's own drag: the record follows the finger, one record, its place in the order kept)
+            ClearRecords(); Setup(ipad2, kSet, CGRectMake(113, 56, 799, 590), NO); gTPresent = [NSSet setWithObjects:kSet, kNotes, nil];
+            DMSMPastEdgeSet(kNotes, CGPointMake(-100, 400), CGSizeMake(400, 300), ipad2, YES);
+            Drag(Steps(CGPointMake(300, 0)), CGPointMake(300, 0));   // (our title bar: let go at x 413..1212, recorded at (812.5, 351))
+            BOOL dropped = RecIs(kSet, 812.5, 351, 799, 590, 1024, 768);
+            AppleDragLive(YES);
+            a = Pass16(kSet, CGPointMake(822.5, 351), st, area10, ipad2, YES);   // (the drag's first pass: 10 pt on, its hysteresis)
+            CGPoint b = Pass16(kSet, CGPointMake(872.5, 351), st, area10, ipad2, YES);   // (its let go)
+            AppleDragLive(NO);
+            CGPoint c2 = Pass16(kSet, CGPointMake(872.5, 351), st, area10, ipad2, NO);
+            Check(dropped && NearPt(a, 822.5, 351) && NearPt(b, 872.5, 351) && NearPt(c2, 872.5, 351) && RecIs(kSet, 872.5, 351, 799, 590, 1024, 768) && gSMPastEdge.count == 2
+                  && [gSMPastEdgeOrder.lastObject isEqualToString:kSet],
+                  [NSString stringWithFormat:@"16: a window let go past the edge by our title bar, moved on by Stage Manager's own drag: it stays where it is let go (%.1f, then %.1f; fitted inside it was 624.5)", a.x, c2.x]);
+        }
+        {   // (iPadOS 17 and 18: the pass asks DMSMAppleDragPass17 with each auto-layout item before its keep -- SMEngineAPI.h DMSM17PassEnd: the place
+            //  before Apple's pass, as the finger has it; the window it names from the touch -- then keeps it where the lookup keeps it)
+            ClearRecords(); Setup(ipad2, kSet, CGRectMake(113, 56, 799, 590), NO); gTPresent = [NSSet setWithObjects:kSet, nil];
+            TItem17 *it = [TItem17 new]; it.key = kSet; TItem17 *other = [TItem17 new]; other.key = kNotes;
+            gSMAppleDragKey = kSet; AppleDragLive(YES);
+            CGPoint p = CGPointMake(1005.7, 350), keep = CGPointZero;
+            BOOL took = DMSMAppleDragPass17(it, &p, st, ipad2);
+            BOOL kept = DMSMPastEdgeHeldAt(p, st, ipad2, &keep);
+            Check(took && kept && NearPt(keep, 1005.7, 350) && RecIs(kSet, 1005.7, 350, 799, 590, 1024, 768),
+                  @"17 / 18: the item of the window Stage Manager's own drag took, past the right edge: noted and kept where the finger has it (17.5.1: held at the edge)");
+            p = CGPointMake(1005.7, 350);
+            Check(!DMSMAppleDragPass17(other, &p, st, ipad2) && NearPt(p, 1005.7, 350) && !Rec(kNotes), @"17 / 18: another window's item: not taken for it (its place as it was)");
+            p = CGPointMake(1005.7, 300);
+            Check(DMSMAppleDragPass17(it, &p, st, ipad2) && NearPt(p, 1005.7, 343), @"17 / 18: its bar over the menu bar: the place handed back held under the bar");
+            int told = LogCount(@"layout items name no window here");
+            p = CGPointMake(1005.7, 350);
+            BOOL un1 = DMSMAppleDragPass17([TItem17Unnamed new], &p, st, ipad2), un2 = DMSMAppleDragPass17([TItem17Unnamed new], &p, st, ipad2);
+            Check(!un1 && !un2 && LogCount(@"layout items name no window here") - told == 1, @"17 / 18: an item with no display item: no window taken for it, said once");
+            p = CGPointMake(512, 683);
+            Check(!DMSMAppleDragPass17(it, &p, CGSizeMake(1024, 768), ipad2), @"17 / 18: its item as big as the container (our full screen): not noted");
+            AppleDragLive(NO);
+            p = CGPointMake(1005.7, 350);
+            Check(!DMSMAppleDragPass17(it, &p, st, ipad2) && gSMAppleDragKey == nil, @"17 / 18: no window drag of Stage Manager's running: nothing noted, the drag's window forgotten");
+            gSMAppleDragKey = kSet; AppleDragLive(YES); gTDragTx.complete = YES;
+            p = CGPointMake(1005.7, 350);
+            Check(!DMSMAppleDragPass17(it, &p, st, ipad2) && gSMAppleDragKey == nil, @"17 / 18: its transaction complete: over, nothing noted");
+            AppleDragLive(NO);
+            gSMAppleDragKey = nil;
+        }
+        ClearRecords();
     }
     printf("test-smpastedge: %d of %d checks pass\n", gChecks - gFails, gChecks);
     return gFails;

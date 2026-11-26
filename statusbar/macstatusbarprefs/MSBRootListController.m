@@ -14,6 +14,7 @@
 #import "../../common/SliderCells.h"   // (our slider rows: value labels that fit, live sliders; shared with the Dock page)
 #import "MSBAcknowledgementsController.h"   // (Acknowledgements, 1.8.5: KeyPilot)
 #import "MSBAppSizesController.h"   // (App Window Sizes, 1.8.8: the Windows & Multitasking row's value)
+NSString *MSBMacLockScreenValue(void);   // (Mac Lock Screen, 1.8.9: the Lock Screen group's row value, MSBMacLockScreenController.m)
 #import "../../common/AppleMultitasking.h"   // (Apple's multitasking settings on the Windows & Multitasking page, 1.6.0: AppleMultitaskingTable.h)
 #import "../../common/EngineBuilds.h"
 #import "../../common/StageManagerAvailable.h"
@@ -576,6 +577,12 @@ static BOOL MSBFinderStored(void) { return MSBDFinderStored(); }   // (as Spring
 	BOOL _msbTailspinShown;   // (... and whether the root helper found Keep Tailspin Off doing something then -- the same)
 }
 - (NSString *)msb_plistName { return @"Root"; }
+// Mac Lock Screen's row (1.8.9, F49): its page's state as its value, "Off" / "On" (MSBMacLockScreenController.m), fresh when the page is back
+- (id)msb_macLockValue:(PSSpecifier *)spec { return MSBMacLockScreenValue(); }
+- (void)viewDidAppear:(BOOL)animated {   // (viewWillAppear: is the line switch's, LineSwitch.h MSBD_LINE_SWITCH_METHODS)
+	[super viewDidAppear:animated];
+	if ([self specifierForID:@"MAC_LOCK_SCREEN"]) [self reloadSpecifierID:@"MAC_LOCK_SCREEN" animated:NO];
+}
 - (BOOL)msb_windowsPage { return NO; }
 - (BOOL)msb_desktopPage { return NO; }
 - (BOOL)msb_liveActivitiesPage { return NO; }

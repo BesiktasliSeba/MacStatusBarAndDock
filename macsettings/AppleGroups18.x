@@ -2,8 +2,8 @@
 //   General > Keyboard > Hardware Keyboard (TIHardwareKeyboardController, KeyboardSettings.bundle): your own shortcuts (KeyPilot first) and Window
 //     Tiling Keys, then "Mac Keys" -- Top-Left Key as Escape, Tab mute, Globe volume, the two brightness pairs -- with the footer our Keyboard page
 //     has (its hint's "Modifier Keys" link opens Apple's row below);
-//   General > Trackpad / Mouse (PSGMousePointerViewController): "Mac Pointer" -- Pointer Style, then (Mac pointer) Hide in Virtual Mac and Use
-//     Pointer Control Style, and Block Pointer Pull-Down.
+//   General > Trackpad / Mouse (PSGMousePointerViewController): "Mac Pointer" -- Pointer Style, then (Mac pointer) Mac Resize Pointers, Hide in
+//     Virtual Mac and Use Pointer Control Style, and Block Pointer Pull-Down.
 // Apple's rows stay as they are. Why only 18: 18 builds Settings' root list in SwiftUI (no PSUIPrefsListController), so our sidebar rows with their
 // own Keyboard and Pointer pages (15-17, unchanged) cannot be there; they are in our group at the top of General instead (MacSettings.x).
 // When one of our own pages shows Apple's rows (it makes Apple's page, never shown: common/NativeEmbed.h), nothing is put into that page: our page

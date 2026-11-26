@@ -41,6 +41,11 @@ target magnifyTrafficLights pref com.besiktasliseba.macstatusbar magnifyTrafficL
 target clockOpensToday pref com.besiktasliseba.macstatusbar clockOpensToday 0 1 Clock Opens Today View|the Today View
 target todayNotifications pref com.besiktasliseba.macstatusbar todayNotifications 0 1 Notifications in Today View|the notifications in the Today View
 target showMuteIcon pref com.besiktasliseba.macstatusbar showMuteIcon 0 1 Show Mute Icon|the mute icon
+# Mac Lock Screen (1.8.9, F49; macsettings/MacLockScreen.x): a crash in it turns its master switch off (off = 0, never set = off)
+target macLockScreen pref com.besiktasliseba.maclockscreen enabled 0 0 Mac Lock Screen|the Mac Lock Screen
+# Hide Status Bar on Lock Screen (macsettings/LockStatusBar.x; 1.8.9 B113 asks SpringBoard to hide its own Lock Screen bar): a crash in it turns its
+# switch off, which stops every call it makes (never set = off; already off: the part, as before)
+target hideLockStatusBar pref com.besiktasliseba.maclockstatusbar hideStatusBar 0 0 Hide Status Bar on Lock Screen|the Lock Screen status bar
 target skipLockAfterRespring pref com.besiktasliseba.macstatusbar skipLockAfterRespring 0 0 Skip Lock Screen After Respring|Skip Lock Screen After Respring
 target forceQuitMenu pref com.besiktasliseba.forcequitmenu enabled 0 1 Force Quit in App Menus|the Force Quit menu item
 target appSizeMenu pref com.besiktasliseba.macappsizemenu enabled 0 1 App Size in App Menus|the App Size menu item
@@ -61,6 +66,12 @@ target batteryHoldPlug piece the battery icon|the plug in the battery icon durin
 # pointer's last sight on another display, from hovers on each display's system gestures window) has no Settings row: a piece; off, nothing of it runs
 # and the iPad's region is read as before 1.8.7
 target pointerRegion piece the pointer with another display|the pointer's place with another display
+# macOS's resize pointers (1.8.9, F51; statusbar/ResizeFact.h: SpringBoard says which window resize band is under the pointer, pointeruid draws
+# macOS's resize cursor there; 1.8.9 F51b: and which of our window engines' grips, from its hover recognizer on the system gestures windows): a
+# piece, not its Settings switch (Mac Resize Pointers' default is per iPadOS -- on on 18, off on 15-17 -- which a pref target cannot say). Off,
+# nothing of it runs (no fact said, its hook of the windows' hovered edge passes straight through, no recognizer) and the pointer shows the Mac
+# arrow at a window's edges and grips (with the switch off: 1.8.8.4's look); pointeruid's part is MacPointer's, which the crash guard does not map
+target resizePointers piece the resize pointers|macOS's resize pointers at window edges and corners
 # App Window Sizes (1.8.8, common/AppWindowSize.h; Settings > Windows & Multitasking > Window Size > App Window Sizes) has no switch: a piece. Off,
 # StatusBar.x DMAppSizeOf answers no app (MSBDCrashSkipped, read once) and DMAppSizesLoad reads and forgets nothing: every window opens as in
 # 1.8.7 (Window Size), nothing else goes off, and Turn Back On brings it back
@@ -146,6 +157,7 @@ title MacStatusBarCore the status bar|the Mac status bar
 title MixAudio the audio mixing|audio mixing
 title MacIconLabels the Home Screen icon labels|the icon labels
 title MacPageDots the Home Screen page dots|the page dots
+title MacLockScreen the Mac Lock Screen|the Mac Lock Screen
 title MacLockStatusBar the Lock Screen status bar|the Lock Screen status bar
 title MacHomeBar the Home Bar|the Home Bar
 title MacCCGrabber Control Center (grabber, RAM & CPU, SSH)|the Control Center grabber and our controls in Control Center
@@ -176,7 +188,11 @@ image MacNowPlaying part
 image MacHomeBar part
 image MacIconLabels part
 image MacLargeTitles part
-image MacLockStatusBar part
+image MacLockScreen macLockScreen
+image MacLockStatusBar hideLockStatusBar map
+# (Hide Status Bar on Lock Screen's B113 hooks go in whatever its switch says: a crash in one of them turns the part off at once; its switch off
+#  would leave them in, and a second crash would be needed before the part went. The rest stays on the switch, which stops every call it makes)
+sym MacLockStatusBar \$LSBReal(Alpha)?\$ part
 image MacPageDots part
 image MacSettingsBadge part
 image MixAudio part
@@ -264,6 +280,7 @@ sym MacStatusBarCore ^_*DMMoreSpace[A-Z] displayScale
 file MacStatusBarCore ^(MoreSpace|DisplayScale)\.h$ displayScale
 file MacStatusBarCore ^(DisplayPrefs|DisplayIdentity|DisplayRows|DisplayRowStore|DisplaySettings)\.h$ displaySettings
 file MacStatusBarCore ^PointerRegion\.h$ pointerRegion
+file MacStatusBarCore ^(ResizeFact|MacResizeCursor)\.h$ resizePointers
 # the recent windows strip (1.8.8.2 F29): its functions and methods by name (their compiler-split .cold parts have no line to go by), then all of
 # RecentStrip.h, and its rules where they are not inlined (no section of either file matches a sec rule)
 sym MacStatusBarCore ([-+]\[DMRStrip(Card|Target)\s|^_*DMRStrip[A-Z]|^_*MSBDR(Strip|ecentStrip|MaxX|MaxY)) recentStrip

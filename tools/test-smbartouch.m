@@ -24,6 +24,8 @@ static void Expect(BOOL ok, NSString *what) { checks++; if (!ok) fails++; printf
 - (UIWindow *)window;
 - (CGPoint)convertPoint:(CGPoint)p fromCoordinateSpace:(id)s;
 - (CGPoint)convertPoint:(CGPoint)p toCoordinateSpace:(id)s;
+- (CGRect)convertRect:(CGRect)r toCoordinateSpace:(id)s;
+- (BOOL)isDescendantOfView:(UIView *)v;
 @end
 @interface UIWindow : UIView @property (nonatomic, strong) UIScreen *screen; @end
 @implementation UIView
@@ -31,15 +33,20 @@ static void Expect(BOOL ok, NSString *what) { checks++; if (!ok) fails++; printf
 - (UIWindow *)window { return self.ownWindow ?: self.superview.window; }
 - (CGPoint)convertPoint:(CGPoint)p fromCoordinateSpace:(id)s { return CGPointMake(p.x - self.origin.x, p.y - self.origin.y); }
 - (CGPoint)convertPoint:(CGPoint)p toCoordinateSpace:(id)s { return CGPointMake(p.x + self.origin.x, p.y + self.origin.y); }
+- (CGRect)convertRect:(CGRect)r toCoordinateSpace:(id)s { return CGRectOffset(r, self.origin.x, self.origin.y); }
+- (BOOL)isDescendantOfView:(UIView *)v { for (UIView *x = self; x; x = x.superview) if (x == v) return YES; return NO; }
 @end
 @implementation UIWindow @end
 @interface SBStatusBarWindow : UIWindow @end @implementation SBStatusBarWindow @end
 @interface UIStatusBarWindow : UIWindow @end @implementation UIStatusBarWindow @end
 @interface SBMainSwitcherWindow : UIWindow @end @implementation SBMainSwitcherWindow @end
 @interface _UISystemGestureWindow : UIWindow @end @implementation _UISystemGestureWindow @end
+typedef long UITouchType;
+enum { UITouchTypeDirect = 0, UITouchTypeIndirectPointer = 3 };
 @interface UITouch : NSObject
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic) CGPoint at;
+@property (nonatomic) UITouchType type;
 - (CGPoint)locationInView:(id)v;
 @end
 @implementation UITouch - (CGPoint)locationInView:(id)v { return self.at; } @end
@@ -64,6 +71,7 @@ static BOOL DMSBUseSTUI(void) { return gSTUI; }
 static BOOL DMSMFree(void) { return gFree; }
 static BOOL DMSMOverWindows(void) { return gOverWindows; }
 static BOOL DMSMTouchFullScreenOwn(UITouch *t) { return gFullOwn; }
+static BOOL DMSMTouchOnDock(UITouch *t) { return NO; }   // (1.8.9 GitHub #20: the Dock's own question, test-smdocktouch.sh)
 static BOOL gMenuOpen = NO;
 static UIScreen *gMenuScreen = nil;   // (the screen our open menu is on: nil the iPad's)
 static BOOL DMSMOurMenuOpen(void) { return gMenuOpen; }   // (the code before review 1.8.4 P3-L3 asked this: any screen)
@@ -76,6 +84,38 @@ static void DMLog(NSString *s) { }
 #define DM_FEATURE_MARK(x) do { } while (0)
 static BOOL (*o_SMUnpinBegin)(id, SEL, id);
 static BOOL AppleBegin(id self, SEL _cmd, id g) { gAppleAsked++; return gAppleAnswer; }
+// ---- 1.8.9 (B114): our title bars (DMSMTitleBar: its window's key, its card), the windows' own hit test (DMSMTouchTarget: what the test sets), the card a
+//      view is in and its key, Stage Manager's own drag's transaction (SMGestureHook.h's list), the pointer's resize band (which card it marks)
+@interface DMSMTitleBar : UIView
+@property (nonatomic, copy) NSString *key, *bundle;
+@property (nonatomic, strong) UIView *card;
+@end
+@implementation DMSMTitleBar @end
+static NSHashTable *gSMBars;
+static UIView *gHit; static int gHitAsked = 0;
+static UIView *DMSMTouchTarget(UITouch *x, id event, UIScreen *screen, CGPoint p) { gHitAsked++; return gHit; }
+static NSMapTable *gCardKeys;   // (card view -> its window's key)
+static UIView *DMSMCardOfView(UIView *v) { for (UIView *x = v; x; x = x.superview) if ([gCardKeys objectForKey:x]) return x; return nil; }
+static NSString *DMSMCardKey(UIView *card) { return [gCardKeys objectForKey:card]; }
+static BOOL DMSMEngine(void) { return gFree; }
+static UIView *gResizeCard;   // (the card whose resize band the pointer marks)
+static BOOL DMSMPointerOnResizeEdge(UIView *card) { return card && card == gResizeCard; }
+static NSString *DMSMKeyText(NSString *k) { return k; }
+@interface SBWindowDragGestureWorkspaceTransaction : NSObject
+@property (nonatomic) BOOL complete;
+@end
+@implementation SBWindowDragGestureWorkspaceTransaction
+- (bool)isComplete { return self.complete; }   // (bool: 'B', as BOOL is on the iPads' arm64)
+@end
+static NSHashTable *gSMGestureTxs;
+static BOOL DMSMGTGetter(id t, SEL s, char ret) {   // (SMGestureHold.h's)
+    Method m = t ? class_getInstanceMethod(object_getClass(t), s) : NULL;
+    if (!m || method_getNumberOfArguments(m) != 2) return NO;
+    char r[8] = {0}; method_getReturnType(m, r, sizeof r);
+    return r[0] == ret;
+}
+static NSString *gSMAppleDragKey; static BOOL gSMAppleDragPast;
+static NSString *gSMPastEdgeResizeKey;   // (a resize by hand followed: a drag ends it)
 #include "smbartouch-gen.h"
 
 // ---- a screen, 1366 x 1024, with a bar and a full-screen card's strip -----------------------------------------------------------------------------------
@@ -183,6 +223,76 @@ int main(void) { @autoreleasepool {
     RESET(); gSTUI = NO;
     Bar([SBStatusBarWindow class], [UIScreen mainScreen], CGRectMake(0, 0, 1024, 20), keep);
     Expect(!On(500, 10), @"  ... and that window's name is only asked on 17 and 18");
+
+    // 1.8.9 (B114, the NIT): two windows' title bars at one point -- the front window's over the one behind -- : the bar a touch there is on is the front
+    // one, the one the windows' own hit test lands in (the first of the set was taken: the log named the window behind, and a pointer's press was asked
+    // about its card's resize band). One bar there: as before, no hit test.
+    RESET();
+    gSMBars = [NSHashTable weakObjectsHashTable]; gCardKeys = [NSMapTable strongToStrongObjectsMapTable];
+    UIWindow *sw = [SBMainSwitcherWindow new]; sw.screen = [UIScreen mainScreen]; sw.ownWindow = sw; [keep addObject:sw];
+    DMSMTitleBar *(^bar)(NSString *, CGRect) = ^DMSMTitleBar *(NSString *k, CGRect r) {
+        UIView *card = [UIView new]; card.superview = sw; card.origin = CGPointMake(r.origin.x, r.origin.y + 24); card.bounds = CGRectMake(0, 0, r.size.width, 400);
+        DMSMTitleBar *b = [DMSMTitleBar new]; b.superview = card; b.origin = r.origin; b.bounds = CGRectMake(0, 0, r.size.width, 24); b.key = k; b.card = card;
+        [gCardKeys setObject:k forKey:card]; [keep addObject:card]; [keep addObject:b]; [gSMBars addObject:b];
+        return b;
+    };
+    DMSMTitleBar *behind = bar(@"com.apple.tips|sceneID:com.apple.tips-default", CGRectMake(100, 100, 600, 24));
+    DMSMTitleBar *front = bar(@"com.apple.Preferences|sceneID:com.apple.Preferences-default", CGRectMake(300, 100, 600, 24));
+    UIView *light = [UIView new]; light.superview = front; [keep addObject:light];
+    DMSMTitleBar *firstOfSet = nil; for (DMSMTitleBar *b in gSMBars.allObjects) { firstOfSet = b; break; }
+    DMSMTitleBar *otherOfSet = firstOfSet == front ? behind : front;
+    UITouch *tb = Touch(500, 110);
+    gHit = otherOfSet; gHitAsked = 0;
+    Expect(DMSMTitleBarAt(CGPointMake(500, 110), [UIScreen mainScreen], tb) == otherOfSet && gHitAsked == 1, @"B114: two title bars at the point: the one the hit test lands in (not the first of the set)");
+    gHit = firstOfSet;
+    Expect(DMSMTitleBarAt(CGPointMake(500, 110), [UIScreen mainScreen], tb) == firstOfSet, @"  ... the other way round too");
+    gHit = light;
+    Expect(DMSMTitleBarAt(CGPointMake(500, 110), [UIScreen mainScreen], tb) == front, @"  ... a light of the front bar: that bar");
+    gHit = nil;
+    Expect(DMSMTitleBarAt(CGPointMake(500, 110), [UIScreen mainScreen], tb) == firstOfSet, @"  ... the hit test reaching neither: the first, as before");
+    gHit = otherOfSet; gHitAsked = 0;
+    Expect(DMSMTitleBarAt(CGPointMake(200, 110), [UIScreen mainScreen], Touch(200, 110)) == behind && gHitAsked == 0, @"  ... one bar at the point: that bar, no hit test (as before)");
+    Expect(DMSMTitleBarAt(CGPointMake(200, 300), [UIScreen mainScreen], Touch(200, 300)) == nil, @"  ... none there: none");
+    // the pointer's press on the overlap: only the window behind has its resize band there; the front window's bar is the drag's
+    gHit = front; gResizeCard = behind.card;
+    UITouch *tp = Touch(500, 110); tp.type = UITouchTypeIndirectPointer;
+    Expect(DMSMTitleBarDragTouch(mgr, drag, tp), @"B114: a pointer's press on the front window's bar, over the band of the window behind it: the bar's drag (Apple's window drag left out)");
+    gResizeCard = front.card;
+    Expect(!DMSMTitleBarDragTouch(mgr, drag, tp), @"  ... on the front window's own resize band: SpringBoard's live resize, as before");
+    gResizeCard = nil;
+    Expect(DMSMTitleBarDragTouch(mgr, drag, Touch(500, 110)) && !DMSMTitleBarDragTouch(mgr, other, Touch(500, 110)) && !DMSMTitleBarDragTouch(mgr, drag, Touch(500, 300)),
+           @"  ... a finger on a title bar: the bar's; another recogniser, or a point on no bar: not asked to");
+
+    // (review: a third window's card in front of both bars there: the touch is that window's -- no title bar's; a view that is no window card's: the first, as before)
+    UIView *third = [UIView new]; third.superview = sw; [keep addObject:third]; [gCardKeys setObject:@"com.apple.mobilenotes|sceneID:com.apple.mobilenotes-x" forKey:third];
+    UIView *thirdContent = [UIView new]; thirdContent.superview = third; [keep addObject:thirdContent];
+    gHit = thirdContent;
+    Expect(DMSMTitleBarAt(CGPointMake(500, 110), [UIScreen mainScreen], tb) == nil, @"B114: a third window's card in front of both bars: no title bar's touch (Apple's drag of that window may take it)");
+    gHit = front.card;
+    Expect(DMSMTitleBarAt(CGPointMake(500, 110), [UIScreen mainScreen], tb) == firstOfSet, @"  ... the hit in one of the two bars' own cards (not their bars): the first, as before");
+
+    // 1.8.9 (B114): Stage Manager's own window drag begins (Apple's begin answer yes): the window under the finger where it went down -- the windows' own hit
+    // test there, its card -- is noted for the layout passes (a resize by hand's follow ends); Apple's no, our refusals, no engine: nothing noted
+    gSMGestureTxs = [NSHashTable weakObjectsHashTable]; gSMAppleDragKey = nil;
+    UIView *inCard = [UIView new]; inCard.superview = front.card; [keep addObject:inCard];
+    gHit = inCard; gSMPastEdgeResizeKey = @"a resize followed";
+    drag.now = CGPointMake(600, 300); drag.moved = CGPointMake(100, 160); gAppleAsked = 0; gAppleAnswer = YES;
+    Expect(DMSMUnpinBegin(mgr, NULL, drag) && [gSMAppleDragKey isEqualToString:front.key] && gSMPastEdgeResizeKey == nil,
+           @"B114: Stage Manager's own drag begins: the window under the finger noted (its card's key), a resize's follow ended");
+    gHit = behind; gAppleAnswer = NO;
+    Expect(!DMSMUnpinBegin(mgr, NULL, drag) && [gSMAppleDragKey isEqualToString:front.key], @"  ... Apple's answer no (no drag): nothing noted");
+    gAppleAnswer = YES; drag.now = CGPointMake(100, 300); drag.moved = CGPointMake(90, 0);
+    Expect(!DMSMUnpinBegin(mgr, NULL, drag) && [gSMAppleDragKey isEqualToString:front.key], @"  ... a start in the left edge's zone (refused): nothing noted");
+    drag.now = CGPointMake(600, 300); drag.moved = CGPointMake(100, 160);
+    gHit = [UIView new]; [keep addObject:gHit];
+    Expect(DMSMUnpinBegin(mgr, NULL, drag) && gSMAppleDragKey == nil, @"  ... a start on no window card: no window noted (the one before forgotten)");
+    gHit = inCard; gFree = NO;
+    Expect(DMSMUnpinBegin(mgr, NULL, drag) && gSMAppleDragKey == nil, @"  ... without the engine: nothing noted");
+    gFree = YES;
+    SBWindowDragGestureWorkspaceTransaction *tx = [SBWindowDragGestureWorkspaceTransaction new];
+    Expect(!DMSMWindowDragLive(), @"  ... no drag transaction: not running");
+    [gSMGestureTxs addObject:tx]; Expect(DMSMWindowDragLive(), @"  ... running while its transaction is in SpringBoard's list");
+    tx.complete = YES; Expect(!DMSMWindowDragLive(), @"  ... complete (not out of the list yet): over"); [gSMGestureTxs removeObject:tx];
 
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
