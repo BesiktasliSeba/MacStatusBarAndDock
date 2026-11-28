@@ -135,4 +135,9 @@ check "  ... a placement of ours to the frame a record was kept with, where the 
    && has 'MSBDTitleRecordOnPlaceAt(YES, MSBDWinNear(to, fill), MSBDWinNear(now.CGRectValue, fill), stays);'"
 check "  ... the Settings row says what each does (Fill: the desktop; Zoom: as large as it fits, keeping its shape), no em dash" \
   "grep -qF 'Fill makes the window fill the desktop. Zoom makes it as large as it fits, keeping its shape. Double-tap again to go back to the size the window had before.' $PL && ! grep -q \$'\\xe2\\x80\\x94' $PL"
+check "1.8.9.1: desktop / Dock / auto-hide relayouts and title-bar micro-drags that snap straight back onto Fill keep the pre-Fill / pre-Zoom record in step" \
+  "grep -qF 'DMTitleRecordFollowDesktopSMLayouts(layouts, wasSMFrames, DMSMWorkingStage());' $S \
+   && grep -qF 'DMTitleRecordFollowDesktopView(st, was, f);' $S && grep -qF 'DMTitleRecordFollowDesktopSM(k, was, f);' $S \
+   && grep -qF 'DMTitleRecordSnapSettledView(st,' $S && grep -qF 'DMTitleRecordSnapSettledSM(w, endWin);' $S \
+   && grep -qF 'DMTitleRecordFollowDesktopView(w, was, f);' $N"
 exit $fails

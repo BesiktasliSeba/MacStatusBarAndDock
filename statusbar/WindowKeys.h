@@ -83,19 +83,76 @@ static void DMWinPrevNoteActive(NSString *bundleID, NSString *smKey) {
 // (gSMBehindDock, gBehindDock): Fill and Zoom take that mark as every place of ours does, and Back gives it back with the frame, so the window is
 // behind the Dock as before, also at the next turn (1.8.7.5: Stage Manager's Back put it back lifted above the Dock, DMSMPlanFitted fitting it there).
 static char kWinZoomKey;
+static char kWinZoomSnapKey;
+static NSMutableDictionary<NSString *, NSArray<NSValue *> *> *gSMWinZoomSnap;
 static NSArray<NSValue *> *DMTitleRecordPair(CGRect before, CGRect fill, BOOL behindDock) {
     NSArray<NSValue *> *r = @[[NSValue valueWithCGRect:before], [NSValue valueWithCGRect:fill]];
     return behindDock ? [r arrayByAddingObject:@YES] : r;
 }
 static BOOL DMTitleRecordIs(id r) { return [r isKindOfClass:[NSArray class]] && ([(NSArray *)r count] == 2 || [(NSArray *)r count] == 3); }
 static BOOL DMTitleRecordBehind(NSArray *r) { return DMTitleRecordIs(r) && r.count == 3 && [r[2] isKindOfClass:[NSNumber class]] && [(NSNumber *)r[2] boolValue]; }
-// A move or a resize by hand has ended: the frame from before is from before that move (dropped).
-static void DMTitleRecordMovedView(UIView *v) { if (v) objc_setAssociatedObject(v, &kWinZoomKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+static void DMTitleRecordStoreView(UIView *V, id rec) { if (V) objc_setAssociatedObject(V, &kWinZoomKey, rec, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+static void DMTitleRecordStoreSM(NSString *smKey, id rec) {
+    if (!smKey.length) return;
+    if (!rec) { [gSMWinZoom removeObjectForKey:smKey]; return; }
+    if (!gSMWinZoom) gSMWinZoom = [NSMutableDictionary dictionary];
+    gSMWinZoom[smKey] = rec;
+}
+// A move or a resize by hand has ended: the frame from before is from before that move (dropped, unless a title-bar drag snaps straight back onto
+// the very Fill / Zoom target it held: DMTitleRecordSnapSettled...).
+static void DMTitleRecordMovedView(UIView *v) {
+    if (!v) return;
+    NSArray<NSValue *> *had = MSBDTitleKeepsFrames(gTitleDoubleTap) ? objc_getAssociatedObject(v, &kWinZoomKey) : nil;
+    objc_setAssociatedObject(v, &kWinZoomSnapKey, DMTitleRecordIs(had) ? had : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(v, &kWinZoomKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 static BOOL DMTitleRecordSMAny(void) { return gSMWinZoom.count > 0; }
 static void DMTitleRecordMovedSM(NSString *key) {
-    if (!gSMWinZoom.count) return;
     key = DMSMWindowKeyOf(key);
-    if (key.length) [gSMWinZoom removeObjectForKey:key];
+    if (!key.length) return;
+    NSArray<NSValue *> *had = (MSBDTitleKeepsFrames(gTitleDoubleTap) && gSMWinZoom.count) ? gSMWinZoom[key] : nil;
+    if (DMTitleRecordIs(had)) { if (!gSMWinZoomSnap) gSMWinZoomSnap = [NSMutableDictionary dictionary]; gSMWinZoomSnap[key] = had; }
+    else [gSMWinZoomSnap removeObjectForKey:key];
+    if (gSMWinZoom.count) [gSMWinZoom removeObjectForKey:key];
+}
+static void DMTitleRecordSnapSettledView(UIView *v, CGRect finalFrame) {
+    if (!v) return;
+    NSArray<NSValue *> *had = objc_getAssociatedObject(v, &kWinZoomSnapKey);
+    objc_setAssociatedObject(v, &kWinZoomSnapKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (MSBDTitleRecordKeepAfterSnap(MSBDTitleKeepsFrames(gTitleDoubleTap), DMTitleRecordIs(had), DMTitleRecordIs(had) && MSBDWinNear(finalFrame, had[1].CGRectValue)))
+        DMTitleRecordStoreView(v, had);
+}
+static void DMTitleRecordSnapSettledSM(NSString *smKey, CGRect finalWindowFrame) {
+    smKey = DMSMWindowKeyOf(smKey);
+    if (!smKey.length || !gSMWinZoomSnap.count) return;
+    NSArray<NSValue *> *had = gSMWinZoomSnap[smKey];
+    [gSMWinZoomSnap removeObjectForKey:smKey];
+    if (MSBDTitleRecordKeepAfterSnap(MSBDTitleKeepsFrames(gTitleDoubleTap), DMTitleRecordIs(had), DMTitleRecordIs(had) && MSBDWinNear(finalWindowFrame, had[1].CGRectValue)))
+        DMTitleRecordStoreSM(smKey, had);
+}
+static void DMTitleRecordFollowDesktopView(UIView *v, CGRect wasFrame, CGRect newFrame) {
+    if (!v) return;
+    NSArray<NSValue *> *had = objc_getAssociatedObject(v, &kWinZoomKey);
+    if (!MSBDTitleRecordFollowsDesktop(MSBDTitleKeepsFrames(gTitleDoubleTap), DMTitleRecordIs(had), DMTitleRecordIs(had) && MSBDWinNear(wasFrame, had[1].CGRectValue), !CGRectIsNull(newFrame) && !CGRectIsEmpty(newFrame))) return;
+    DMTitleRecordStoreView(v, DMTitleRecordPair(had[0].CGRectValue, newFrame, DMTitleRecordBehind(had)));
+}
+static void DMTitleRecordFollowDesktopSM(NSString *smKey, CGRect wasFrame, CGRect newFrame) {
+    smKey = DMSMWindowKeyOf(smKey);
+    if (!smKey.length || !gSMWinZoom.count) return;
+    NSArray<NSValue *> *had = gSMWinZoom[smKey];
+    if (!MSBDTitleRecordFollowsDesktop(MSBDTitleKeepsFrames(gTitleDoubleTap), DMTitleRecordIs(had), DMTitleRecordIs(had) && MSBDWinNear(wasFrame, had[1].CGRectValue), !CGRectIsNull(newFrame) && !CGRectIsEmpty(newFrame))) return;
+    DMTitleRecordStoreSM(smKey, DMTitleRecordPair(had[0].CGRectValue, newFrame, DMTitleRecordBehind(had)));
+}
+static void DMTitleRecordFollowDesktopSMLayouts(NSDictionary<NSString *, NSString *> *layouts, NSDictionary<NSString *, NSValue *> *wasFrames, id stage) {
+    if (!layouts.count || !gSMWinZoom.count || !MSBDTitleKeepsFrames(gTitleDoubleTap)) return;
+    if (!stage) stage = DMSMWorkingStage();
+    CGSize scr = CGSizeZero; CGRect u = DMSMUsableAreaForStage(stage, &scr);
+    CGRect newFill = DMSMLayoutFrameIn(@"fill", u, scr);
+    for (NSString *k in layouts) {
+        if (![layouts[k] isEqualToString:@"fill"]) continue;
+        NSValue *wf = wasFrames[k];
+        if (wf) DMTitleRecordFollowDesktopSM(k, wf.CGRectValue, newFill);
+    }
 }
 // A placement of ours is about to move this window from now to `to`; fill: the Fill frame where it is (the title bar's own Zoom: the zoomed frame,
 // the one its record is kept with -- TitleBarRule.h, 1.8.4.1 item 1). (A setting that keeps no frames: dropped, and nothing read -- every placement
@@ -522,6 +579,7 @@ static void DMWindowKeysApply(void) {
     if (gWindowKeysOn) DMWindowKeysInstall();
     if (!DMWinPrevWanted()) gSMWinPrev = nil;
     if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) gSMWinZoom = nil;   // (the title bar's Fill / Zoom records go with the setting: review 1.8.3 P2-5)
+    if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) gSMWinZoomSnap = nil;
     DMWindowKeysPublish();
 }
 

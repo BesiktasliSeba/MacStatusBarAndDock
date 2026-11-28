@@ -86,6 +86,32 @@ int main(void) {
     CHECK(MSBDKeyboardPillMeasure(0, 55) == 0, "another process's input bar or pill only: still the pill alone");
     CHECK(MSBDKeyboardPillMeasure(69, 0) == 69, "SpringBoard's own field's bar: as before");
     CHECK(MSBDKeyboardPillMeasure(420, 398) == 420, "both: the taller one");
+    // 1.8.9.1: Stage Manager's in-app Dock stays on screen when the Dock is at Left (1) or Right (2), or when only a hardware keyboard bar / floating
+    // keyboard is up (smDockedShown == false even if Apple's modifier flag is true)
+    CHECK(MSBDKeyboardSMHidesDock(true, true, false, 0, false), "Stage Manager, bottom Dock + real docked keyboard: hides");
+    CHECK(!MSBDKeyboardSMHidesDock(true, true, false, 1, false), "Stage Manager, left Dock + docked keyboard: stays on screen");
+    CHECK(!MSBDKeyboardSMHidesDock(true, true, false, 2, false), "Stage Manager, right Dock + docked keyboard: stays on screen");
+    CHECK(!MSBDKeyboardSMHidesDock(true, false, false, 0, false), "Stage Manager, hardware keyboard bar / floating keyboard (smDockedShown false): stays at bottom too");
+    CHECK(!MSBDKeyboardSMHidesDock(true, false, false, 1, false), "Stage Manager, left Dock + hardware keyboard: stays on screen");
+    CHECK(!MSBDKeyboardSMHidesDock(true, true, true, 0, false), "Stage Manager, the Dock's own search field: stays on screen");
+    CHECK(MSBDKeyboardSMHidesDock(true, true, false, 1, true), "Stage Manager, another display (its Dock is at the bottom) + docked keyboard: hides there");
+    // 1.8.9.1: our own fields' docked keyboard (Finder, TextEdit, desktop rename / sticky notes) never drops a left or right Dock under SBHomeScreenWindow (-2)
+    CHECK(MSBDKeyboardOwnDockLevel(0, true, 6.0) == -3.0, "our field, bottom Dock: -3 under the Home Screen (covered by the bottom keyboard)");
+    CHECK(MSBDKeyboardOwnDockLevel(1, true, 6.0) == 5.5, "our field, left Dock on Stage Manager (native layer 6.0): 5.5 above Home (-2) and switcher (5), under keyboard (7/8)");
+    CHECK(MSBDKeyboardOwnDockLevel(2, true, 6.0) == 5.5, "our field, right Dock on Stage Manager: 5.5");
+    CHECK(MSBDKeyboardOwnDockLevel(1, true, 1003.0) == 25.0, "our field, left Dock on Zetsu (native 1003, keyboard 1004): stays at 25 above Home, under keyboard");
+    CHECK(MSBDKeyboardOwnDockLevel(2, true, 1034.0) == 25.0, "our field, right Dock on Aerial / MilkyWay4 (native 1034, keyboard 1035): stays at 25");
+    CHECK(MSBDKeyboardOwnDockLevel(1, false, -2.0) == 25.0, "desktop rename / sticky note (1035, keyboard 1036), left Dock: stays at 25");
+    // 1.8.9.1 q02: 16.7.7 Stage Manager unrotated portrait companion notification ({0, 616, 768, 408} -> {616, 0, 408, 768} on 1024 x 768)
+    // is ignored so it cannot clobber gSMKeyboardShown, and Left/Right Dock steps to 5.5 under SBMedusaHostedKeyboardWindow (20.0)
+    CHECK(MSBDKeyboardNoteForeignScene(CGRectMake(0, 616, 768, 408), CGRectMake(616, 0, 408, 768), ipad2), "16.7.7 portrait companion notification ({0,616,768,408}) is foreign-scene");
+    CHECK(MSBDKeyboardNoteForeignScene(CGRectMake(0, 969, 768, 55), CGRectMake(969, 0, 55, 768), ipad2), "16.7.7 portrait companion bar ({0,969,768,55}) is foreign-scene");
+    CHECK(!MSBDKeyboardNoteForeignScene(CGRectMake(360, 0, 408, 1024), CGRectMake(0, 360, 1024, 408), ipad2), "real landscape keyboard is not foreign-scene");
+    CHECK(!MSBDKeyboardNoteForeignScene(goingF, goingG, land) && !MSBDKeyboardNoteForeignScene(goneF, goneG, land), "hide / zero frames are not foreign-scene");
+    CHECK(!MSBDKeyboardNoteForeignScene(CGRectMake(0, 1006, 1024, 360), CGRectMake(0, 1006, 1024, 360), port), "portrait screen keyboard is not foreign-scene");
+    CHECK(!MSBDKeyboardNoteForeignScene(floatF, floatG, ipad2), "floating keyboard is not foreign-scene");
+    CHECK(MSBDKeyboardSMDockUnder(true, true, false, 1) && MSBDKeyboardSMDockUnder(true, true, false, 2), "Stage Manager docked app keyboard lowers Left/Right Dock to 5.5");
+    CHECK(!MSBDKeyboardSMDockUnder(true, true, false, 0) && !MSBDKeyboardSMDockUnder(true, false, false, 1) && !MSBDKeyboardSMDockUnder(true, true, true, 1), "Stage Manager bottom Dock, non-docked keyboard, or Dock-owned keyboard does not use smKeyboard under");
     printf("test-kbdock: %d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;
 }

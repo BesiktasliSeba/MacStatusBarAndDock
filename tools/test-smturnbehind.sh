@@ -25,7 +25,8 @@ SBT_FN=('static BOOL DMSMTurnSettling(void) {' 'static NSString *DMSMShapeKey(CG
         'static BOOL DMSMApplyPlacesMarkedIn(NSDictionary<NSString *, id> *bundleToLayout, id stage, NSSet<NSString *> *placedByUser) {'
         'static void DMSMWatchTurn(void) {' 'static NSString *DMSMWindowKeyOf(NSString *key) {')
 # (the title bar's records: WindowKeys.h; "?": only where the code has it -- new in 1.8.7.5) and its double tap: TitleBarTap.h
-SBT_WK=('static NSMutableDictionary<NSString *, NSArray<NSValue *> *> *gSMWinZoom;' 'static NSArray<NSValue *> *DMTitleRecordPair(CGRect before, CGRect fill' '?static BOOL DMTitleRecordIs(id r) {'
+SBT_WK=('static NSMutableDictionary<NSString *, NSArray<NSValue *> *> *gSMWinZoom;' '?static NSMutableDictionary<NSString *, NSArray<NSValue *> *> *gSMWinZoomSnap;'
+        'static NSArray<NSValue *> *DMTitleRecordPair(CGRect before, CGRect fill' '?static BOOL DMTitleRecordIs(id r) {'
         '?static BOOL DMTitleRecordBehind(NSArray *r) {' 'static void DMSMRecordsPrune(NSMutableDictionary *map) {' 'static void DMTitleRecordMovedSM(NSString *key) {'
         'static void DMTitleRecordSMAt(NSString *key, id stage, CGRect to, CGRect fill) {' 'static void DMTitleRecordSMTo(NSString *key, id stage, CGRect to) {'
         'static NSValue *DMTitleRecordHeldSM(NSString *key, CGRect now) {' '?static BOOL DMTitleRecordBehindSM(NSString *key) {')

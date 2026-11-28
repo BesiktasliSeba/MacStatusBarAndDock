@@ -36,6 +36,7 @@ static id DMSMWorkingStage(void) { return @"stage"; }
 static NSMutableDictionary *DMSMTurnLayouts(void) { return [NSMutableDictionary dictionary]; }
 static void DMSMFitHiddenStages(id o, NSDictionary *l, NSDictionary *p) { (void)o; (void)l; (void)p; }
 static void DMMSWDockMovedRecords(void) { }
+static void DMTitleRecordFollowDesktopSM(NSString *key, CGRect wasFrame, CGRect newFrame) { (void)key; (void)wasFrame; (void)newFrame; }
 static void Run(NSDictionary<NSString *, NSString *> *layouts) {
     gFront = @"settings"; gOneByOne = gWhole = 0; gPlaces = nil;
     do {

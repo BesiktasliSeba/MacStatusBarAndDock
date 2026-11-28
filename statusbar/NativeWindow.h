@@ -311,10 +311,35 @@ static void DMNativeSetActive(DMNativeWindow *w) {
 }
 // An app comes forward by another way than a touch (Command-Tab's pick): the native windows step back behind the app windows, as an app icon's tap
 // makes them (the front-app watcher can't see the app that was already in front behind them come forward).
+#include "../common/WindowOrder.h"
 static void DMNativeStepBack(NSString *why) {
     if (!gNativeActive) return;
     DMLog([NSString stringWithFormat:@"[native] %@: native windows inactive", why]);
     DMNativeSetActive(nil);
+}
+// 1.8.9.1 (B127): Window > Bring All to Front for our native windows (Finder, TextEdit): all visible native windows come forward, and any smaller
+// visible native window completely covered by a larger one rises above it in relative order instead of being re-buried by [active activate].
+static void DMNativeBringAllToFront(DMNativeWindow *active) {
+    NSArray<DMNativeWindow *> *snap = [gNativeWindows copy];
+    int n = (int)MIN(snap.count, (NSUInteger)64), apps[64], order[64];
+    CGRect frames[64]; bool shown[64];
+    for (int i = 0; i < n; i++) {
+        DMNativeWindow *x = snap[i];
+        shown[i] = !x.hidden && x.superview != nil;
+        frames[i] = shown[i] ? x.frame : CGRectNull;
+        apps[i] = shown[i] ? 1 : 0;
+    }
+    if (active && !active.hidden) [active activate];
+    int m = MSBDOrderBringAllToFront(apps, frames, shown, n, 1, order);
+    DMNativeWindow *top = nil;
+    for (int i = 0; i < m; i++) {
+        if (!shown[order[i]]) continue;
+        DMNativeWindow *x = snap[order[i]];
+        [gNativeWindows removeObjectIdenticalTo:x]; [gNativeWindows addObject:x];
+        [x.superview bringSubviewToFront:x];
+        top = x;
+    }
+    if (top && top != gNativeActive) DMNativeSetActive(top);
 }
 // SpringBoard saw a touch begin (-[SpringBoard sendEvent:]): in a native window it becomes active; in an app window or on the Home Screen the
 // native windows become inactive. Touches on our menu bar, menus, the Dock or the system's own overlays change nothing (Finder's menus are used
@@ -1013,15 +1038,18 @@ static BOOL DMNativeWindowKeys(DMNativeWindow *w, UIKey *key) {
 // The layer turned with the iPad: every native window kept inside the new desktop -- at once (in the rotation's own animation), and once more
 // when the turn has settled: the usable desktop (above the Dock, which moves after the turn) was still the old one's height at first (a Left
 // Half window in portrait was only 745 pt tall, M1 30 Sep).
+static void DMTitleRecordFollowDesktopView(UIView *v, CGRect wasFrame, CGRect newFrame);
 static void DMNativeLayoutOneForDesktop(DMNativeWindow *w, CGRect desk) {   // (one window; also one of another Mac Switcher desktop when the Dock moves, MacSwitcher.h)
-    if (!CGRectIsNull(w.restoreFrame)) { w.frame = CGRectInset(desk, 4.0, 4.0); return; }   // (zoomed: fills the new desktop)
+    CGRect was = w.frame;
+    if (!CGRectIsNull(w.restoreFrame)) { CGRect d = CGRectInset(desk, 4.0, 4.0); DMTitleRecordFollowDesktopView(w, was, d); w.frame = d; return; }   // (zoomed: fills the new desktop)
     if (w.layoutName) {   // (put in a layout from the Window menu -- Right Half...: laid out again for the new desktop, like the engines' tiles)
         CGRect f = DMLayoutFrameInArea(w.layoutName, desk, [UIScreen mainScreen].bounds.size);
-        if (!CGRectIsNull(f) && !CGRectIsEmpty(f)) { w.frame = f; return; }
+        if (!CGRectIsNull(f) && !CGRectIsEmpty(f)) { DMTitleRecordFollowDesktopView(w, was, f); w.frame = f; return; }
     }
     CGRect f = DMNativeClamp(w.frame, w.minSize);   // (anywhere else: kept whole on the new desktop when it fits -- a turn left windows mostly off screen)
     f.origin.x = MAX(CGRectGetMinX(desk), MIN(f.origin.x, CGRectGetMaxX(desk) - f.size.width));
     f.origin.y = MAX(CGRectGetMinY(desk), MIN(f.origin.y, CGRectGetMaxY(desk) - f.size.height));
+    DMTitleRecordFollowDesktopView(w, was, f);
     w.frame = f;
 }
 static void DMNativeLayoutForDesktop(BOOL log) {

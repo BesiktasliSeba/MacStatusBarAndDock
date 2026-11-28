@@ -202,6 +202,7 @@ mut_s() {   # $1 what, $2 file of the tree, $3 perl substitution: the site check
 }
 if [ -d "$W/real" ]; then
   mut_h "pointeruid's own views not told apart (nothing held)" MPAside.h 's/if \(MPAsideIn\(\(__bridge const void \*\)l, held, n\) \|\| MPAsideIn\(\(__bridge const void \*\)d, held, n\)\) continue;/(void)held;/'
+  mut_h "pointeruid's morphing shape subview counted as another pointer" MPAside.h 's/        if \(\[d isKindOfClass:\[UIView class\]\] && MPAsideClassIsPUID\(object_getClass\(d\)\)\) continue;\n//'
   mut_h "a hidden layer counted" MPAside.h 's/if \(!l \|\| l\.hidden \|\| l\.opacity < 0\.01f \|\| depth > 6\) return NO;/if (!l || depth > 6) return NO;/'
   mut_h "the round pointer the Mac pointer hid itself counted" MPAside.h 's/ && !\[weHid containsObject:round\]//'
   mut_h "another library's classes not looked for" MPAside.h 's/BOOL other = MPAsideOtherImageOf\(\(__bridge const void \*\)c\) != NULL;/BOOL other = NO;/'

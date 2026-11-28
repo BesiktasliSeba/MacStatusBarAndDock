@@ -65,9 +65,11 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property (nonatomic, copy) NSString *bundle;      // (the stand-in's app: DMStageBundle)
 @property (nonatomic) BOOL minimized;             // (DMStageMinimized)
 - (CGRect)convertRect:(CGRect)r toCoordinateSpace:(id)space;
+- (CGRect)convertRect:(CGRect)r fromCoordinateSpace:(id)space;
 @end
 @implementation UIView
 - (CGRect)convertRect:(CGRect)r toCoordinateSpace:(id)space { (void)space; return r; }   // (the engines' layers are the screen's size, at its origin)
+- (CGRect)convertRect:(CGRect)r fromCoordinateSpace:(id)space { (void)space; return r; }
 - (void)layoutIfNeeded { }
 - (void)bringSubviewToFront:(UIView *)v { (void)v; }
 @end
@@ -240,6 +242,7 @@ static void DMKeepStagePlace(UIView *stage, CGRect frame);
 static CGRect DMFitInto(CGRect f, CGRect usable);
 static void DMRelayoutStageWhenLanded(UIView *stage, CGSize oldSize, CGSize newSize, int attempt);
 static void DMTitleRecordMovedView(UIView *v);
+static void DMTitleRecordSnapSettledView(UIView *v, CGRect finalFrame);
 static void DMTitleRecordEngineTo(UIView *v, CGRect to);
 static void DMBehindDockMoveEnded(UIView *st);
 #include "engineturnbehind-sb.inc"

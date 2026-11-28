@@ -69,6 +69,15 @@ static inline BOOL MPAsideClassIsOther(Class c) {
     CFDictionarySetValue(known, (__bridge const void *)c, other ? (const void *)1 : (const void *)2);
     return other;
 }
+// A view class of pointeruid's own hierarchy (PUID... / _PUID..., never another jailbreak library's).
+static inline BOOL MPAsideClassIsPUID(Class c) {
+    if (!c || MPAsideClassIsOther(c)) return NO;
+    for (Class k = c; k && k != [UIView class]; k = class_getSuperclass(k)) {
+        const char *cn = class_getName(k);
+        if (cn && (!strncmp(cn, "PUID", 4) || !strncmp(cn, "_PUID", 5))) return YES;
+    }
+    return NO;
+}
 // A layer that shows something: not hidden or see-through, with an image, a fill, a border, a path, text, or such a layer inside it.
 static inline BOOL MPAsideLayerShows(CALayer *l, int depth) {
     if (!l || l.hidden || l.opacity < 0.01f || depth > 6) return NO;
@@ -131,6 +140,7 @@ static inline unsigned MPAsideSeen(UIView *view, UIViewController *controller, U
         if (l == ours) continue;
         id d = l.delegate;
         if (MPAsideIn((__bridge const void *)l, held, n) || MPAsideIn((__bridge const void *)d, held, n)) continue;
+        if ([d isKindOfClass:[UIView class]] && MPAsideClassIsPUID(object_getClass(d))) continue;
         if ([d isKindOfClass:[UIView class]] ? MPAsideViewShows(d) : MPAsideLayerShows(l, 0)) { seen |= MSBD_MP_SEEN_LAYER; break; }
     }
     Ivar iv = class_getInstanceVariable(object_getClass(view), "_pointerView");

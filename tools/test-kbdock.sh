@@ -12,4 +12,10 @@ check "1.8.2.2 A12Z F9 / code review 4: the Downloads panel reads a keyboard fra
   "grep -qF 'CGRect k = MSBDKeyboardPanelFrame([window convertRect:end fromCoordinateSpace:scr.coordinateSpace], [window convertRect:end fromCoordinateSpace:scr.fixedCoordinateSpace], window.bounds.size);' ../dock/Downloads.m \
    && ! grep -qF 'CGRect k = [window convertRect:end fromCoordinateSpace:window.screen.fixedCoordinateSpace];' ../dock/Downloads.m && ! grep -q 'MSBDKeyboardNoteOnScreen' ../dock/Downloads.m \
    && grep -qF 'MSBDKeyboardNoteOnScreen(f, g, scr);' ../statusbar/Desktop.h && grep -qF 'return MSBDKeyboardNoteOnScreen(f, g, screen.bounds.size).size.height;' ../statusbar/StatusBar.x"
+check "1.8.9.1: a Left or Right Dock stays on screen while typing in apps (Stage Manager converts fixed-space keyboard frames and requires dockSide == bottom) and in our own fields (never lowered to -3 under the Home Screen)" \
+  "grep -qF 'BOOL keyboard = MSBDKeyboardSMHidesDock(appleKeyboard, gSMKeyboardShown, DMSMDockOwnsKeyboard(), dockSide, otherDisplay);' ../statusbar/StatusBar.x \
+   && grep -qF 'BOOL docked = MSBDKeyboardNoteDocked(f, g, scr);' ../statusbar/StatusBar.x \
+   && grep -qF 'MSBDKeyboardNoteForeignScene(f, g, scr)' ../statusbar/StatusBar.x \
+   && grep -qF 'MSBDKeyboardSMDockUnder(DMSMFree(), gSMKeyboardShown, DMSMDockOwnsKeyboard(), dockSide);' ../statusbar/StatusBar.x \
+   && grep -qF 'MSBDKeyboardOwnDockLevel(dockSide, nativeFocus,' ../statusbar/Desktop.h"
 [ $fails = 0 ] && echo "test-kbdock: site checks pass" || { echo "test-kbdock: site checks FAILED"; exit 1; }

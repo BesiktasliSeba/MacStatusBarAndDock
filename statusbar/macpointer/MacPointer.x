@@ -495,12 +495,23 @@ static CGAffineTransform MPCursorTransform(UIView *view) {
     objc_setAssociatedObject(view, kMPTurnCacheKey, @[@(orient), @(size), @((uintptr_t)w), @((uintptr_t)s), [NSValue valueWithCGAffineTransform:t]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return t;
 }
-// The system's own pointer views of a pointer view (its round pointer and its accessibility ring and dot), read each time (straight ivar reads: a
-// view the system replaces is never missed).
+// The system's own pointer views of a pointer view (its round pointer, iPadOS 18's morphing path-shape view under resize bands, and its
+// accessibility ring and dot), read each time (ivar and subview reads: a view the system adds or replaces for a shape is never missed, while
+// views of another library are left alone for MPAsideSeen).
 static NSArray<UIView *> *MPNativeViews(UIView *view) {
-    NSMutableArray *m = [NSMutableArray arrayWithCapacity:3];
-    const char *names[] = {"_pointerView", "_axColorStroke", "_axCenterDot"};
-    for (int i = 0; i < 3; i++) { UIView *v = MPIvar(view, names[i]); if (!v) { @try { v = [view valueForKey:@(names[i])]; } @catch (id e) {} } if ([v isKindOfClass:[UIView class]]) [m addObject:v]; }
+    NSMutableArray<UIView *> *m = [NSMutableArray arrayWithCapacity:4];
+    const char *names[] = {"_pointerView", "_pointerShapeMorphingView", "_axColorStroke", "_axCenterDot"};
+    for (int i = 0; i < 4; i++) {
+        UIView *v = MPIvar(view, names[i]);
+        if (!v && i != 1) { @try { v = [view valueForKey:@(names[i])]; } @catch (id e) {} }
+        if ([v isKindOfClass:[UIView class]] && !MPAsideClassIsOther(object_getClass(v)) && ![m containsObject:v]) [m addObject:v];
+    }
+    const void *held[64];
+    int nh = MPAsideHeldBy(view, [UIView class], held, 0, 64);
+    for (UIView *sub in view.subviews) {
+        if ([m containsObject:sub] || MPAsideClassIsOther(object_getClass(sub))) continue;
+        if (MPAsideIn((__bridge const void *)sub, held, nh) || MPAsideClassIsPUID(object_getClass(sub))) [m addObject:sub];
+    }
     return m;
 }
 // Why the arrow is not shown on the iPad's own display (1.8.8.2, MSBD_MP_NOW_*, for Report a Problem): from the reads MPUpdate made (enabled is
@@ -908,6 +919,15 @@ static void MPApplyVisibility(void) {
       NSString *sig = [NSString stringWithFormat:@"type %lld bounds %@ r%.1f", shape.shapeType, NSStringFromCGRect(shape.bounds), shape.cornerRadius];
       if (![sig isEqualToString:last]) { last = sig; MPLog([NSString stringWithFormat:@"%.3f setPointerShape %@ animated %d (passed on %d) at %@", CACurrentMediaTime(), sig, animated, morph, NSStringFromCGPoint(((UIView *)self).frame.origin)]); } }
 #endif
+    if (main && (!before || ![before isEqual:shapeObj])) {   // (let iPadOS set each native view's own visibility for the new shape; MPUpdate hides what stays shown)
+        NSMutableArray *hid = objc_getAssociatedObject(self, kMPHidNativeKey);
+        if (hid.count) {
+            [CATransaction begin]; [CATransaction setDisableActions:YES];
+            for (UIView *v in hid) v.layer.hidden = NO;
+            [hid removeAllObjects];
+            [CATransaction commit];
+        }
+    }
     %orig(shapeObj, morph, completion);
     if (!main) return;
     gMPShapeView = (PUIDPointerShapeView *)self;

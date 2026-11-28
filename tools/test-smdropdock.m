@@ -17,8 +17,10 @@ static void DMLog(NSString *s) { [gKLog addObject:s ?: @""]; }
 static BOOL DMTestFlag(const char *path) { return NO; }
 static NSMutableArray<NSString *> *gKFront;
 static void DMSMBringToFront(NSString *key) { [gKFront addObject:key ?: @"(nil)"]; }
+static const CGFloat kSMBarH = 24.0;
 static int gKMoved;
 static void DMTitleRecordMovedSM(NSString *key) { gKMoved++; }
+static void DMTitleRecordSnapSettledSM(NSString *key, CGRect settled) { (void)key; (void)settled; }
 static int gKDockSide;   // (Settings > Dock > Position: 0 at the bottom)
 static int DMDockSideNow(CGSize screen) { return gKDockSide; }
 static BOOL gKSnap; static CGPoint gKSnapAt, gKSnapT; static int gKSnapAsked;

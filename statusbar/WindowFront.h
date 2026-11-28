@@ -63,18 +63,79 @@ static void DMBringAppWindowsForward(NSString *bundle, NSString *why) {
     UIView *stage = DMActiveEngine() == DMEngineMilkyWay ? DMFindMilkyWayWindow(bundle) : DMStageForBundle(bundle);
     if (stage) DMEngineRaise(stage, why);
 }
-// Window > Bring All to Front, as on a Mac: the front app's windows above the other apps' windows. The windows behind a full-screen app come over it
+static CGRect DMKeepCoveredFrame(UIView *s);
+static BOOL DMKeepCoveredShows(UIView *s, UIScreen *scr);
+// Stage Manager, Window > Bring All to Front (1.8.9.1, B127): all of the front app's shown windows above other apps' windows, with any smaller
+// window of that app covered (MSBDFrameCoveredBy) by a larger window of that app placed above the larger window in relative order (and if the front
+// app has a single big window already in front, covered smaller windows lifted into view).
+static BOOL DMSMBringAllToFront(NSString *bundle) {
+    id stage = DMSMWorkingStage();
+    NSDictionary *map = DMSMStageItemsMap(stage);
+    NSDictionary<NSString *, NSValue *> *open = DMSMOpenWindowFrames();
+    if (!bundle.length || !map.count) return NO;
+    NSSet *onScreen = [NSSet setWithArray:DMSMWindowKeys() ?: @[]];
+    NSArray *items = [[map allKeys] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        long long ta = DMSMAttrTimeOr(map[a], 0), tb = DMSMAttrTimeOr(map[b], 0);
+        return ta < tb ? NSOrderedAscending : (ta > tb ? NSOrderedDescending : NSOrderedSame);
+    }];
+    int n = (int)MIN(items.count, (NSUInteger)64), apps[64], order[64];
+    CGRect frames[64]; bool shown[64];
+    long long newest = 0;
+    for (int i = 0; i < n; i++) {
+        NSString *k = DMSMItemKey(items[i]);
+        NSValue *fv = k ? open[k] : nil;
+        bool vis = k && [onScreen containsObject:k] && !DMSMAttrsFullScreen(map[items[i]]);
+        shown[i] = vis;
+        frames[i] = (vis && fv) ? fv.CGRectValue : CGRectNull;
+        apps[i] = (vis && [DMSMKeyBundle(k) isEqualToString:bundle]) ? 1 : 0;
+        newest = MAX(newest, DMSMAttrTimeOr(map[items[i]], 0));
+    }
+    int m = MSBDOrderBringAllToFront(apps, frames, shown, n, 1, order);
+    int start = m;
+    for (int i = 0; i < m; i++) if (order[i] != i) { start = i; break; }
+    if (start >= m) return YES;
+    NSMutableDictionary *times = [NSMutableDictionary dictionary];
+    id front = nil; long long t = newest;
+    for (int i = start; i < m; i++) { times[items[order[i]]] = @(++t); front = items[order[i]]; }
+    BOOL ok = front && DMSMRequestStageOrderAs(stage, times, front, YES);
+    DMLog([NSString stringWithFormat:@"[front] Bring All to Front: %@ (%lu window(s) reordered, %@)", bundle, (unsigned long)times.count, ok ? @"asked" : @"refused"]);
+    return ok;
+}
+// Aerial, Zetsu, MilkyWay4 (1 window per app): after raising the front app's window, also lift any shown smaller windows completely covered by it
+// when Keep Covered Windows in Front is off (when on, DMEngineRaise already kept them above).
+static void DMEngineSurfaceCoveredByFront(NSString *bundle) {
+    if (gKeepCoveredInFront || !bundle.length || DMSMEngine() || DMActiveEngine() == DMEngineNone) return;
+    UIView *frontStage = DMActiveEngine() == DMEngineMilkyWay ? DMFindMilkyWayWindow(bundle) : DMStageForBundle(bundle);
+    if (!frontStage) return;
+    NSArray<UIView *> *stages = DMAerialStages();
+    int n = (int)MIN(stages.count, (NSUInteger)64), apps[64], order[64];
+    CGRect frames[64]; bool shown[64];
+    UIScreen *scr = DMSnapScreenOf(frontStage);
+    for (int i = 0; i < n; i++) {
+        shown[i] = DMKeepCoveredShows(stages[i], scr);
+        frames[i] = shown[i] ? DMKeepCoveredFrame(stages[i]) : CGRectNull;
+        apps[i] = (stages[i] == frontStage) ? 1 : 0;
+    }
+    int m = MSBDOrderBringAllToFront(apps, frames, shown, n, 1, order);
+    BOOL past = NO;
+    for (int i = 0; i < m; i++) {
+        if (stages[order[i]] == frontStage) { past = YES; continue; }
+        if (past && shown[order[i]]) DMEngineRaise(stages[order[i]], @"Bring All to Front (covered smaller window)");
+    }
+}
+// Window > Bring All to Front, as on a Mac: the front app's windows above the other apps' windows (and covered smaller windows un-buried above a
+// bigger one, B127). The windows behind a full-screen app come over it
 // first, as this row did before 1.8.4.1 (the engines' gWindowsPinnedForward; Stage Manager's DMSMWindowsForward: one request at a time there).
 static void DMBringAllToFrontNow(void) {
     DM_FEATURE_MARK("window-bring-all-to-front");
     NSString *front = [DMActiveApp() bundleIdentifier];
     if (DMSMEngine()) {
         if (DMSMFullScreenBundle().length && DMSMWindowsBehindFullScreen()) { DMSMWindowsForward(YES); return; }
-        if (front.length) DMSMAppWindowsForward(front, @"Bring All to Front");
+        if (front.length) DMSMBringAllToFront(front);
         return;
     }
     if ((gWindowsBehindApps || gFullScreenRaised) && !gWindowsPinnedForward) DMToggleWindowsForward();   // (over the full-screen app, as before)
-    if (front.length) DMBringAppWindowsForward(front, @"Bring All to Front");
+    if (front.length) { DMBringAppWindowsForward(front, @"Bring All to Front"); DMEngineSurfaceCoveredByFront(front); }
 }
 // The Window menu's list of windows, as on a Mac: the front app's windows, the front one ticked; a pick brings that one to the front (Stage Manager:
 // as a tap on it does, DMSMBringToFront; the engines' one window: DMEngineRaise). Two windows of one app (Stage Manager) by the app's name and a

@@ -30,9 +30,11 @@ check "an app's Dock icon, Command-Tab and the Mac Switcher's pick bring its win
    && grep -qF 'else if (t.kind == DMMSWKindStage && DMActiveEngine() != DMEngineNone && DMSurfaceWindowForApp(t.bundle)) {}' $M"
 check "  ... and a tap or a click in a window (MacAppBridge's touched note) the same way" \
   "fn 'static void DMRaiseStageForBundle(NSString *bundle) {' $S && has 'DMEngineRaise(stage, [NSString stringWithFormat:@\"a tap or click in %@'\"'\"'s window\", bundle]);' && ! has '_bringStageToFrontIfNeeded'"
-check "Bring All to Front as on a Mac: the front app's windows above the others (Stage Manager: every window of the app in one request, as Stage Manager asks it), the windows over a full-screen app first as before" \
+check "Bring All to Front as on a Mac: the front app's windows above the others (Stage Manager: every window of the app in one request, covered smaller windows above a bigger one), the windows over a full-screen app first as before" \
   "fn 'static void DMBringAllToFrontNow(void) {' $F && has 'if (DMSMFullScreenBundle().length && DMSMWindowsBehindFullScreen()) { DMSMWindowsForward(YES); return; }' \
-   && has 'if ((gWindowsBehindApps || gFullScreenRaised) && !gWindowsPinnedForward) DMToggleWindowsForward();' && has 'if (front.length) DMBringAppWindowsForward(front, @\"Bring All to Front\");' \
+   && has 'if ((gWindowsBehindApps || gFullScreenRaised) && !gWindowsPinnedForward) DMToggleWindowsForward();' && has 'if (front.length) { DMBringAppWindowsForward(front, @\"Bring All to Front\"); DMEngineSurfaceCoveredByFront(front); }' \
+   && has 'if (front.length) DMSMBringAllToFront(front);' \
+   && fn 'static BOOL DMSMBringAllToFront(NSString *bundle) {' $F && has 'int m = MSBDOrderBringAllToFront(apps, frames, shown, n, 1, order);' && has 'BOOL ok = front && DMSMRequestStageOrderAs(stage, times, front, YES);' \
    && fn 'static BOOL DMSMAppWindowsForward(NSString *bundle, NSString *why) {' $F && has 'int m = MSBDOrderAppToFront(apps, n, 1, order);' && has 'BOOL ok = front && DMSMRequestStageOrderAs(stage, times, front, YES);' \
    && has 'if (!moves) return YES;' && has '!DMSMAttrsFullScreen(map[items[i]])'"
 check "  ... the Window menu offers it on every engine with windows showing, and Send All to Back only while the windows are in front of a full-screen app" \
@@ -44,6 +46,6 @@ check "the Window menu's list of the front app's windows: a pick brings it to th
   "fn 'static void DMOpenWindowMenu(UIButton *btn) {' $S && before 'NSArray *listed = DMWindowListRows();' 'DMPresentMenu(btn, kWinLabelKey, kWinPillKey, items);' \
    && fn 'static NSArray *DMWindowListRows(void) {' $F && has 'handler:DMCloseThen(^{ DMSMBringToFront(key); })' && has 'r.checked = [key isEqualToString:frontKey];' \
    && has 'if (s) DMEngineRaise(s, @\"the Window menu'\"'\"'s list\");' && has 'if (!front.length || DMNativeActiveApp()) return rows;'"
-check "our own windows' Window menu keeps its Bring All to Front and list (Finder)" \
-  "grep -qF '[items addObject:R(@\"Bring All to Front\", nil, ^{ for (DMNativeWindow *x in [gNativeWindows copy]) if (!x.hidden) [x.superview bringSubviewToFront:x]; [w activate]; })];' $S"
+check "our own windows' Window menu keeps its Bring All to Front (lifting covered smaller native windows) and list (Finder)" \
+  "grep -qF '[items addObject:R(@\"Bring All to Front\", nil, ^{ DMNativeBringAllToFront(w); })];' $S && grep -qF 'int m = MSBDOrderBringAllToFront(apps, frames, shown, n, 1, order);' ../statusbar/NativeWindow.h"
 exit $fails

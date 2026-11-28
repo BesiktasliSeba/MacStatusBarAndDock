@@ -88,4 +88,52 @@ static inline int MSBDActiveWithKept(const bool *shown, const bool *keptAbove, c
     return keptUnder;
 }
 
+// 1.8.9.1 (B127): Window > Bring All to Front when a big window is in front and smaller windows are completely covered behind it:
+//  - All shown windows of `app` come above other apps' windows, keeping their relative order EXCEPT that any window of `app` completely covered
+//    (MSBDFrameCoveredBy) by a larger window of `app` above it rises above that larger window (keeping relative order among siblings, and handling
+//    nested sizes like Big > Medium > Small -> [Big, Medium, Small] back-to-front so every window of the app is visible in front).
+//  - When `app` has only one shown window and it is already the frontmost shown window (every single-window-per-app engine -- Aerial, Zetsu,
+//    MilkyWay4 -- and single-window Stage Manager), lift any shown smaller windows completely covered by that front window above it in their
+//    relative order so Bring All to Front un-buries covered smaller windows there too.
+static inline int MSBDOrderBringAllToFront(const int *apps, const CGRect *frames, const bool *shown, int n, int app, int *out) {
+    if (!apps || !out || n <= 0) return 0;
+    if (!frames || !shown) return MSBDOrderAppToFront(apps, n, app, out);
+    int appIdx[64], otherIdx[64], m = 0, o = 0, topShown = -1;
+    if (n > 64) n = 64;
+    for (int i = 0; i < n; i++) {
+        if (shown[i]) topShown = i;
+        if (shown[i] && apps[i] == app) appIdx[m++] = i;
+        else otherIdx[o++] = i;
+    }
+    if (m == 0) { for (int i = 0; i < n; i++) out[i] = i; return n; }
+    // Single-window front app already in front of every shown window: un-bury smaller shown windows covered by it.
+    if (m == 1 && appIdx[0] == topShown) return MSBDOrderKeepCovered(frames, shown, n, appIdx[0], out, (int *)0);
+    // Multi-window (or not yet at front): within `app`'s shown windows, lift any window buried under a covering window of `app` above that window,
+    // preserving relative order among siblings. MSBDFrameCoveredBy is a strict partial order (acyclic), so at most m passes settle it.
+    for (int pass = 0; pass < m; pass++) {
+        bool changed = false;
+        for (int q = m - 1; q >= 0; q--) {
+            int moved[64], kept[64], mc = 0, kc = 0;
+            for (int p = 0; p < q; p++) {
+                if (MSBDFrameCoveredBy(frames[appIdx[p]], frames[appIdx[q]])) moved[mc++] = appIdx[p];
+                else kept[kc++] = appIdx[p];
+            }
+            if (!mc) continue;
+            int next[64], t = 0;
+            for (int j = 0; j < kc; j++) next[t++] = kept[j];
+            next[t++] = appIdx[q];
+            for (int j = 0; j < mc; j++) next[t++] = moved[j];
+            for (int j = q + 1; j < m; j++) next[t++] = appIdx[j];
+            for (int j = 0; j < m; j++) appIdx[j] = next[j];
+            changed = true;
+            break;
+        }
+        if (!changed) break;
+    }
+    int k = 0;
+    for (int i = 0; i < o; i++) out[k++] = otherIdx[i];
+    for (int i = 0; i < m; i++) out[k++] = appIdx[i];
+    return k;
+}
+
 #endif

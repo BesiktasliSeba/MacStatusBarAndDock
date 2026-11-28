@@ -909,6 +909,11 @@ static void DMTitleRecordSMTo(NSString *key, id stage, CGRect to);
 static void DMTitleRecordSMPlan(NSDictionary *plan, id stage);
 static void DMTitleRecordMovedView(UIView *v);
 static void DMTitleRecordMovedSM(NSString *key);
+static void DMTitleRecordSnapSettledView(UIView *v, CGRect finalFrame);
+static void DMTitleRecordSnapSettledSM(NSString *smKey, CGRect finalWindowFrame);
+static void DMTitleRecordFollowDesktopView(UIView *v, CGRect wasFrame, CGRect newFrame);
+static void DMTitleRecordFollowDesktopSM(NSString *smKey, CGRect wasFrame, CGRect newFrame);
+static void DMTitleRecordFollowDesktopSMLayouts(NSDictionary<NSString *, NSString *> *layouts, NSDictionary<NSString *, NSValue *> *wasFrames, id stage);
 static BOOL DMTitleRecordSMAny(void);   // (WindowKeys.h: a Stage Manager window has a title bar's frame from before)
 // A move or a resize by hand has ended -- also cut short (cancelled): the window moved all the same (review 1.8.3 L2: only an end dropped it). A window
 // Keep Covered Windows in Front kept above another is an ordinary one again (KeepCovered.h, review 1.8.4.1 M1).
@@ -3398,6 +3403,7 @@ static void DMWatchGuidedAccess(void);   // (Guided Access: our UI steps aside w
 static void DMWinCardsTick(void);   // (WindowCards.h: every window's app has its App Switcher card, the front window's first)
 static void DMAMCmdTabTick(void);   // (ActMonDock.h: the apps seen in front since Activity Monitor was, for Command-Tab's order, 1.7.8)
 static void DMWindowedGripsFollow(void);   // (every engine's resize grips in the colour their inputs give now -- with the Stage Manager engine's grips, below)
+static BOOL DMRStripTickNeeded(void);   // (RecentStrip.h: YES only while the strip is on or a cleanup tick is due)
 static void DMRStripTick(void);   // (RecentStrip.h: the recent windows strip, 1.8.8.2 F29)
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("guided", DMWatchGuidedAccess());
@@ -3426,7 +3432,7 @@ static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("kbfollow", DMKeyboardFocusFollowsFrontWindow());
     DM_PERF("kbbehind", DMKeyboardFocusBehindWindows());
     DM_PERF("wincards", DMWinCardsTick());
-    DM_PERF("rstrip", DMRStripTick());   // (the recent windows strip, RecentStrip.h: returns at once while it is off or no window exists)
+    if (DMRStripTickNeeded()) DM_PERF("rstrip", DMRStripTick());   // (the recent windows strip, RecentStrip.h: skipped while off)
     DM_PERF("zetsu", DMWatchZetsu());
     DM_PERF("grips", DMWindowedGripsFollow());   // (Tint Resize Handles, light or dark, an app's tint: every engine's grips at once, 1.8.7.5)
     DM_PERF("gamebar", DMWatchBarOverHidingApp());
@@ -7521,7 +7527,8 @@ static void DMSnapMoveEnded(UIView *st) {
     BOOL snaps = st && !(DMSnapOff() && !DMDockSideKeepsOut()) && !CGRectIsNull(w) && !CGRectIsEmpty(w);
     CGRect s = snaps ? DMSnapEngineWindow(st, w, MSBDSnapMove) : w;
     DMBehindDockMoveEndedAt(st, s);   // (behind the Dock where it ends, after its snap, or not -- 1.8.7.5; a snap up onto the Dock's line is not behind it)
-    if (!snaps || CGRectEqualToRect(s, w)) return;
+    if (!snaps || CGRectEqualToRect(s, w)) { DMTitleRecordSnapSettledView(st, st ? st.frame : CGRectNull); return; }
+    DMTitleRecordSnapSettledView(st, DMSnapEngineFrameFor(st, s));
     DMSnapMoveEngineTo(st, s);
 }
 static void DMSnapMoveEngineTo(UIView *st, CGRect s) {   // (a window, as drawn on the screen, to that place on its engine)
@@ -7866,6 +7873,7 @@ static void DMDockChangedRelayout(NSString *why) {
     gSMIPadDesktopScope++;   // (the iPad's Dock: its own stage's windows, 1.8.7)
     NSDictionary *layouts = DMSMEngine() ? DMSMLayoutsNow() : nil;   // (before the usable area forgets the old Dock -- and the old room: it stands on the answer taken
                                                                      //  before, gDMDockAutoHideTaken, until the change below is taken)
+    NSDictionary<NSString *, NSValue *> *wasSMFrames = (DMSMEngine() && DMTitleRecordSMAny()) ? DMSMOpenWindowFrames() : nil;
     // (Automatically Hide and Show the Dock: the switch as stored against the answer the room stands on; taken once the Dock part has it too, below)
     gSMIPadDesktopScope--;
     int ahWant = DMDockAutoHideStoredOn();
@@ -7897,7 +7905,7 @@ static void DMDockChangedRelayout(NSString *why) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             (void)DMUsableArea();
             if (side && !ahChanged) return;   // (followed by its strip, when its thickness changed: above)
-            gSMIPadDesktopScope++;
+            gSMIPadDesktopScope++; if (DMSMEngine() && layouts.count) DMTitleRecordFollowDesktopSMLayouts(layouts, wasSMFrames, DMSMWorkingStage());
             if (DMSMEngine()) { if (layouts.count) DMSMApplyLayouts(layouts); else if (ahChanged) DMDockAutoHideSMPass(); }
             else if (DMFitEnabled()) DMApplyGroupSlots(nil);
             if (moved || ahChanged) DMDockPositionMoved(layouts);   // (the Dock's room came or went: every window in a layout into the same layout of the new desktop)
@@ -11197,7 +11205,9 @@ static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {
         for (NSString *b in frames) {
             CGRect f = frames[b].CGRectValue;
             if (layouts[b] || CGRectEqualToRect(CGRectIntegral(f), CGRectIntegral(CGRectMake(0, -kSMBarH, scr.width, scr.height + kSMBarH))) || CGRectContainsRect(CGRectInset(area, -1.0, -1.0), f)) continue;
-            places[b] = [NSValue valueWithCGRect:MSBDDockSideKeepOut(f, area, MSBDDockKeepMove)];
+            CGRect kept = MSBDDockSideKeepOut(f, area, MSBDDockKeepMove);
+            DMTitleRecordFollowDesktopSM(b, f, kept);
+            places[b] = [NSValue valueWithCGRect:kept];
         }
         if (places.count) {
             for (NSString *b in layouts) if (frames[b]) places[b] = layouts[b];
@@ -11221,6 +11231,7 @@ static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {
             CGRect w = DMSnapWindowOf(st);
             if (CGRectIsNull(w) || CGRectIsEmpty(w)) continue;
             CGRect t = name ? DMLayoutFrameWindow(name) : MSBDDockSideKeepOut(w, DMUsableArea(), MSBDDockKeepMove);   // (kept inside the new desktop, as a turn keeps windows inside: back at the bottom, above the Dock)
+            if (!CGRectIsNull(t) && !CGRectEqualToRect(t, w)) DMTitleRecordFollowDesktopView(st, st.frame, DMSnapEngineFrameFor(st, t));
             if (!CGRectIsNull(t) && !CGRectEqualToRect(t, w)) { DMBehindDockPlacedByUs(st, @"the Dock moved or its room changed: out from under it"); DMSnapMoveEngineTo(st, t); }   // (as Stage Manager's, which takes the mark there: 1.8.7.5)
             continue;
         }
@@ -11233,6 +11244,7 @@ static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {
         CGRect t = name ? DMLayoutFrameWindow(name) : MSBDDockSideKeepOut(w, DMUsableArea(), MSBDDockKeepMove);
         if (CGRectIsNull(t) || CGRectIsEmpty(t) || CGRectEqualToRect(t, w)) continue;
         CGRect f = DMSnapEngineFrameFor(st, t);
+        DMTitleRecordFollowDesktopView(st, from, f);
         gStageFrameBypass = YES; DMSetStageFrameSafe(st, f); gStageFrameBypass = NO;
         DMSetStageIntent(st, f);
         placed++;
@@ -11251,9 +11263,11 @@ static void DMDockSideThicknessChanged(double was, double now, int side) {
     gSMIPadDesktopScope++;   // (the iPad's Dock: its own stage's windows, 1.8.7)
     NSDictionary *layouts = DMSMEngine() ? DMSMLayoutsNow() : nil;
     gDMDockSideStripHeld = -1.0;
+    NSDictionary<NSString *, NSValue *> *wasSMFrames = (DMSMEngine() && layouts.count && DMTitleRecordSMAny()) ? DMSMOpenWindowFrames() : nil;
     DMLayoutNoteHold(2.4);   // (the other engines' noted layouts stay the old desktop's until the windows are placed)
     DM_FEATURE_MARK("dock-side-thickness-follow");
     DMLog([NSString stringWithFormat:@"[dockside] the Dock's thickness changed: %.1f -> %.1f pt; the desktop follows it (%@), windows in a layout follow it %@", was, now, NSStringFromCGRect(DMUsableArea()), layouts]);
+    if (DMSMEngine() && layouts.count) DMTitleRecordFollowDesktopSMLayouts(layouts, wasSMFrames, DMSMWorkingStage());
     if (DMSMEngine()) { if (layouts.count) DMSMApplyLayouts(layouts); }
     else if (DMFitEnabled()) DMApplyGroupSlots(nil);
     DMDockPositionMoved(layouts);
@@ -19672,7 +19686,7 @@ static void DMOpenNativeWindowMenu(UIButton *btn) {
         }
         [items addObject:[NSNull null]];
     }
-    [items addObject:R(@"Bring All to Front", nil, ^{ for (DMNativeWindow *x in [gNativeWindows copy]) if (!x.hidden) [x.superview bringSubviewToFront:x]; [w activate]; })];
+    [items addObject:R(@"Bring All to Front", nil, ^{ DMNativeBringAllToFront(w); })];
     // (the Recent Windows Strip, 1.8.8.4: the same rows as the engines' Window menu -- Move to Strip, this window into it, as its Minimize with the
     //  switch on; Show Recent Windows, the strip stepped aside brought out over the windows)
     if (w && DMRStripOn()) [items addObject:R(@"Move to Strip", nil, ^{ [w minimize]; })];
@@ -40536,7 +40550,7 @@ static void DMAutoHideSetTitleShift(UIView *st, CGFloat want, BOOL animated) {
         }
     };
     void (^done)(BOOL) = ^(BOOL finished) { if (DMAutoHideTitleShiftOf(st) == 0) cover.hidden = YES; };
-    if (animated) [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut animations:apply completion:done];
+    if (animated) [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionCurveEaseInOut animations:apply completion:done];
     else { [UIView performWithoutAnimation:apply]; done(YES); }
     if (want > 0 && !objc_getAssociatedObject(st, kSBBakeKey)) {   // (a drag of the slid title bar: see DMAutoHideBake)
         DMShiftBakeRecognizer *r = [[DMShiftBakeRecognizer alloc] initWithTarget:nil action:nil];
@@ -40642,7 +40656,7 @@ static void DMStatusBarMoveWindows(BOOL show, CGFloat h, BOOL animated) {
             }
         }
     };
-    if (animated) [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut animations:move completion:nil];
+    if (animated) [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionCurveEaseInOut animations:move completion:nil];
     else [UIView performWithoutAnimation:move];
     DMLog([NSString stringWithFormat:@"[autohide] %lu windows %@", (unsigned long)stages.count, show ? @"moved down with the bar" : @"moved back up"]);
 }
@@ -40723,7 +40737,7 @@ static void DMStatusBarSetHidden(BOOL hide, NSString *why) {
     if (!hide) gSBRevealedAt = CACurrentMediaTime();
     NSArray *bars = DMStatusBarsToMove();
     CGFloat h = DMStatusBarHeightForMove();
-    [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut animations:^{
+    [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionCurveEaseInOut animations:^{
         for (UIView *b in bars) DMStatusBarApplyOffset(b, hide ? -h : 0.0, YES);
     } completion:nil];
     // windows: moved down only while auto-hide gives them the top 24 pt (otherwise they are below the bar anyway: nothing to move)
@@ -40785,7 +40799,7 @@ static void DMAutoHideTVStrip(BOOL on) {
 // The TV's state onto its bar copies (each by its own display's state: MSBDBarAHCopyOffset) and its strip. No window moves.
 static void DMAutoHideTVApply(NSString *why) {
     NSArray *bars = DMStatusBarsToMoveOn(1);
-    [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut animations:^{
+    [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionCurveEaseInOut animations:^{
         for (UIView *b in bars) DMStatusBarApplyOffset(b, MSBDBarAHCopyOffset(&gDMTVBarAH, MIN(40.0, b.bounds.size.height)), YES);
     } completion:nil];
     DMAutoHideTVStrip(gDMTVBarAH.hidden);
@@ -41004,6 +41018,7 @@ static void DMAutoHideRetopAll(BOOL layout, BOOL tiled, BOOL modeChanged) {
         f.origin.y = ry; f.size.height = rh;
         if (CGRectEqualToRect(f, was)) continue;
         objc_setAssociatedObject(st, kSBRetopKey, @(tries + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMTitleRecordFollowDesktopView(st, was, f);
         DMAutoHideUnshift(st);
         DMAerialMoveStage(st, f, nil);
         DMLog([NSString stringWithFormat:@"[autohide] %@ %@ to %@", DMStageBundle(st), layout ? @"up to the top edge" : @"back under the bar", NSStringFromCGRect(f)]);
@@ -42798,11 +42813,17 @@ static BOOL DMSMWindowDragLeavesTouch(id manager, UIGestureRecognizer *g, UITouc
 // went to the Dock and opened the App Switcher, and the bottom of a Finder window reaching the Dock could not be tapped (iPad 2 30 Sep). Above the
 // platter, where an active native window is, the touch is the window's; the Dock keeps its platter, its icons (magnified ones reach higher) and
 // the Downloads panel (the Dock window is raised over everything while it is open).
+static BOOL DMSMDockOwnsKeyboard(void);
 %hook SBFloatingDockWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *h = %orig;
     UIWindow *me = (UIWindow *)self;
-    if (!h || !event || !gNativeActive || me.windowLevel > 1000.0) return h;
+    if (!h || !event || me.windowLevel > 1000.0) return h;
+    if (!gDockMenuOpen && DMSMFree() && gSMKeyboardShown && (!me.screen || me.screen == [UIScreen mainScreen]) && !DMSMDockOwnsKeyboard()) {
+        CGPoint ksp = [me convertPoint:point toCoordinateSpace:(me.screen ?: [UIScreen mainScreen]).coordinateSpace];
+        if (CGRectContainsPoint(gSMKeyboardFrame, ksp)) return nil;
+    }
+    if (!gNativeActive) return h;
     for (UIView *v = h; v && v != me; v = v.superview) if ([NSStringFromClass([v class]) containsString:@"IconView"]) return h;
     // (a Dock icon's menu, open: every touch the Dock's window answers is the menu's -- its rows, and UIKit's fallback view that closes it on a touch
     //  anywhere else. Over an active native window both were let go to that window, so the menu stayed open and the window took the tap: Activity
@@ -45234,6 +45255,8 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
         pan.delegate = self;   // (a pointer press on a resize band is the window's resize: gestureRecognizer:shouldReceiveTouch:)
         [self addGestureRecognizer:pan];
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dm_tap:)];
+        tap.cancelsTouchesInView = NO;
+        tap.delegate = self;   // (never on a traffic light: the button's own TouchUpInside acts on the first tap)
         [self addGestureRecognizer:tap];
         DMTitleTapAttach(self, kDMTitleSM);   // (a double tap: Fill, Zoom, Minimize or nothing, as the setting says -- TitleBarTap.h)
         __weak DMSMTitleBar *weakSelf = self;   // (grey on an inactive window, symbols on hover or press: the shared light behaviour)
@@ -45273,6 +45296,10 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
 // (the drag's touches: a pointer press while the pointer marks a resize band -- at the bar's top or sides, SMResizeEdges.h, or a window's behind it
 //  -- is SpringBoard's live resize, not a move. Only the pointer's: SpringBoard resizes with the pointer alone, so a finger always moves the window)
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)t {
+    if ([g isKindOfClass:[UITapGestureRecognizer class]]) {
+        for (UIView *v = t.view; v && v != self; v = v.superview) if ([v isKindOfClass:[UIControl class]]) return NO;
+        return YES;
+    }
     if (t.type == UITouchTypeIndirectPointer && DMSMPointerOnResizeEdge(_card)) return NO;
     // (1.8.8.3: where it goes down, for the drag to follow from there, -dm_pan:. Another touch while the noted one is still down: a two-finger
     //  pan, its middle no finger's point -- that drag goes by UIKit's translation, as before)
@@ -45378,6 +45405,13 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
         card.transform = was;
         CGPoint c = CGPointMake(card.center.x + t.x, card.center.y + t.y), mid = CGPointMake(CGRectGetMidX(dropped), CGRectGetMidY(dropped)), at = CGPointZero;
         BOOL snapped = DMSMSnapMoveTarget(w, card, t, &at);   // (1.7.3 item 3: let go, it lines up with what is near -- 16, 17 and 18 alike)
+        {
+            CGSize ss = scn.bounds.size;
+            CGRect endWin = snapped && ss.width > 0 && ss.height > 0
+                ? CGRectMake(at.x * ss.width - droppedOnScreen.size.width / 2.0, at.y * ss.height - droppedOnScreen.size.height / 2.0 - kSMBarH, droppedOnScreen.size.width, droppedOnScreen.size.height + kSMBarH)
+                : CGRectMake(droppedOnScreen.origin.x, droppedOnScreen.origin.y - kSMBarH, droppedOnScreen.size.width, droppedOnScreen.size.height + kSMBarH);
+            DMTitleRecordSnapSettledSM(w, endWin);
+        }
         {   // (put behind the Dock by hand, or not: recorded now, not guessed later from sizes -- logic review R2. From the dropped card's bottom,
             //  nothing added: the card read as it was already carried the drag (the transform of its last move), and adding the drag again counted
             //  it twice -- a window let go 300 pt lower, its bottom well above the Dock, was taken for one put behind it and later fitted under it;
@@ -47486,12 +47520,19 @@ static void DMWindowedGripsFollow(void) {
 // through as a thin dark line between the bar and the window (KT, 25 Oct; 17.5 landscape: one column (40,40,41) between bar (28,28,29) and a
 // light window). So on 17/18 the bar sits on the content's own top edge and reaches one pixel into it: bar and window are one piece. Only
 // SpringBoard's rounding is followed (a page moved further, as by a swipe, is not); 15/16: exactly as before.
+static const void *kSMBarPageTopKey = &kSMBarPageTopKey;
 static CGRect DMSMBarFrame(UIView *card) {
     CGFloat w = card.bounds.size.width;
     if (DMSMLayoutGen() != 17) return CGRectMake(0, -kSMBarH, w, kSMBarH);
     UIView *page = (UIView *)DMSMPageViewOf(card);
     CGFloat top = page ? [page convertRect:page.bounds toView:card].origin.y : 0.0;
-    if (!isfinite(top) || fabs(top) > 1.0) top = 0.0;
+    if (DMSMGestureLive()) {   // (during a live resize the card moves at 120 Hz while the scene's page trails behind: keep the settled offset so the bar never jitters)
+        NSNumber *kept = card ? objc_getAssociatedObject(card, kSMBarPageTopKey) : nil;
+        top = kept ? kept.doubleValue : (!isfinite(top) || fabs(top) > 0.35 ? 0.0 : top);
+    } else {
+        if (!isfinite(top) || fabs(top) > 1.0) top = 0.0;
+        if (card) objc_setAssociatedObject(card, kSMBarPageTopKey, @(top), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     CGFloat scale = card.window.screen.scale > 0 ? card.window.screen.scale : [UIScreen mainScreen].scale;
     DM_FEATURE_MARK("sm-bar-on-content-17");
     return CGRectMake(0, top - kSMBarH, w, kSMBarH + 1.0 / MAX(1.0, scale));
@@ -47635,9 +47676,10 @@ static void DMAutoHideSMSlideBars(BOOL show, CGFloat h, BOOL animated) {
         UIView *card = DMAutoHideSMCardOf(bar);   // (its card as its layout knows it: the bar is in the card's inner clipping view, not the card itself)
         if (!card || bar.hidden) continue;
         CGRect f = DMSMBarFrameNow(card, bar);
+        if (gSMSlideBarH > 0) DMSMChromeOnTop(card, bar);   // (slid into the card's bounds: keep the bar above _killScrollView before the first tap)
         if (fabs(f.origin.y - bar.frame.origin.y) < 0.25) continue;
         void (^apply)(void) = ^{ bar.frame = f; };
-        if (animated) [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut animations:apply completion:nil];
+        if (animated) [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionCurveEaseInOut animations:apply completion:nil];
         else [UIView performWithoutAnimation:apply];
         n++;
     }
@@ -48619,6 +48661,44 @@ static BOOL DMSMDockOwnsKeyboard(void) {
     }
     return NO;
 }
+static NSHashTable *gSMSwitcherKBVCs;
+static void DMSMSyncKeyboardDockLevel(void) {
+    int dockSide = DMDockSideNow([UIScreen mainScreen].bounds.size);
+    BOOL under = MSBDKeyboardSMDockUnder(DMSMFree(), gSMKeyboardShown, DMSMDockOwnsKeyboard(), dockSide);
+    if (!under && ![gDockUnderReasons containsObject:@"smKeyboard"]) return;
+    DMDesktopDockUnder(@"smKeyboard", under, kMSBDKeyboardSMDockLevel);
+}
+static BOOL DMSMUpdateKeyboardFromNotification(id n, CGRect *rawOut) {
+    CGRect f = CGRectZero;
+    if ([n isKindOfClass:[NSNotification class]]) { NSValue *v = ((NSNotification *)n).userInfo[UIKeyboardFrameEndUserInfoKey]; if ([v isKindOfClass:[NSValue class]]) f = v.CGRectValue; }
+    if (rawOut) *rawOut = f;
+    UIScreen *screen = [UIScreen mainScreen];
+    CGSize scr = screen.bounds.size;
+    CGRect g = [screen.fixedCoordinateSpace convertRect:f toCoordinateSpace:screen.coordinateSpace];
+    BOOL docked = MSBDKeyboardNoteDocked(f, g, scr);
+    if (!docked && MSBDKeyboardNoteForeignScene(f, g, scr)) {
+        DMSMSyncKeyboardDockLevel();
+        return gSMKeyboardShown;
+    }
+    gSMKeyboardShown = docked;
+    gSMKeyboardFrame = docked ? MSBDKeyboardNoteOnScreen(f, g, scr) : CGRectZero;
+    DMSMSyncKeyboardDockLevel();
+    return docked;
+}
+static void DMSMWatchKeyboardFrameChanges(id vc) {
+    if (!gSMSwitcherKBVCs) gSMSwitcherKBVCs = [NSHashTable weakObjectsHashTable];
+    if (vc) [gSMSwitcherKBVCs addObject:vc];
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIKeyboardWillChangeFrameNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+            BOOL was = gSMKeyboardShown;
+            BOOL docked = DMSMUpdateKeyboardFromNotification(note, NULL);
+            if (was == docked || !DMSMFree()) return;
+            SEL upd = NSSelectorFromString(@"_updateSoftwareKeyboardVisibleWithKeyboardShowing:");
+            for (id c in [gSMSwitcherKBVCs allObjects]) if ([c respondsToSelector:upd]) ((void (*)(id, SEL, BOOL))objc_msgSend)(c, upd, docked);
+        }];
+    });
+}
 %hook SBFullScreenContinuousExposeSwitcherModifier
 - (BOOL)shouldConfigureInAppDockHiddenAssertion {
     BOOL apple = %orig;
@@ -48634,8 +48714,6 @@ static BOOL DMSMDockOwnsKeyboard(void) {
     id own = fsl ? object_getIvar(me, fsl) : nil;
     if (own) { NSDictionary *om = DMSMStageItemsMap(own); for (id it in om) if (DMSMAttrsFullScreen(om[it])) full = YES; }
     else full = DMSMStageHasFullScreenWindow();
-    BOOL keyboard = appleKeyboard && !DMSMDockOwnsKeyboard();   // (Apple's flag, set only for a keyboard really shown: see _updateSoftwareKeyboardVisible... below;
-                                                                 //  not for the Dock's own search field, above)
     BOOL autoHide = DMDockAutoHides();   // (Settings > Dock > Automatically Hide and Show the Dock: hidden in a stage too, brought by Apple's own swipe and pointer --
                                          //  also where Apple's tick can't follow our switch, DMDockAutoHideSyncSM)
     // (1.8.7: by this modifier's own stage's display -- each display's stage has its own modifier, S5: a TV's Dock hides by the TV's own setting. Apple's
@@ -48643,6 +48721,11 @@ static BOOL DMSMDockOwnsKeyboard(void) {
     //  switch, so a TV switched off for itself keeps its Dock while the iPad's hides)
     id ownDisplay = own ? DMSMStageDisplayIdentity(own) : nil;
     BOOL otherDisplay = ownDisplay && !DMSMIsMainIdentity(ownDisplay);
+    int dockSide = otherDisplay ? MSBDDockBottom : DMDockSideNow([UIScreen mainScreen].bounds.size);
+    // (1.8.9.1: Apple's flag alone turned on from UIKeyboardDidChangeUIPosition == 3 even for a hardware keyboard's bar or before willShow, and a side
+    //  Dock -- Left or Right -- was slid off the edge whenever typing started in an app. Require a real docked on-screen keyboard and a bottom Dock.)
+    BOOL keyboard = MSBDKeyboardSMHidesDock(appleKeyboard, gSMKeyboardShown, DMSMDockOwnsKeyboard(), dockSide, otherDisplay);
+    if (!otherDisplay) DMSMSyncKeyboardDockLevel();
     BOOL displayHides = otherDisplay ? DMDockAutoHidesForIdentity(ownDisplay) : autoHide;
     BOOL r = keyboard || full || MSBDAutoHideInAppPref(otherDisplay, prefers, autoHide, displayHides);   // (common/DockAutoHide.h)
 #if DEBUG
@@ -48672,17 +48755,14 @@ static BOOL DMSMDockOwnsKeyboard(void) {
 // Only a DOCKED on-screen keyboard counts (logic test K3): the full width of the screen, down to its bottom edge and taller than the bar that is
 // all that shows with a hardware keyboard -- that bar, a floating or a split keyboard leave the Dock alone, as Apple does.
 - (void)_keyboardWillShow:(id)n {
+    DMSMWatchKeyboardFrameChanges(self);
     CGRect f = CGRectZero;
-    if ([n isKindOfClass:[NSNotification class]]) { NSValue *v = ((NSNotification *)n).userInfo[UIKeyboardFrameEndUserInfoKey]; if ([v isKindOfClass:[NSValue class]]) f = v.CGRectValue; }
-    CGSize scr = [UIScreen mainScreen].bounds.size;
-    BOOL docked = f.size.width >= scr.width - 1.0 && CGRectGetMaxY(f) >= scr.height - 1.0 && f.size.height > 150.0;
-    gSMKeyboardShown = docked;
-    gSMKeyboardFrame = docked ? f : CGRectZero;
-    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[sm] keyboard will show: %@ (docked %d)", NSStringFromCGRect(f), docked]);
+    BOOL docked = DMSMUpdateKeyboardFromNotification(n, &f);
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[sm] keyboard will show: %@ (screen %@, docked %d)", NSStringFromCGRect(f), NSStringFromCGRect(gSMKeyboardFrame), docked]);
     %orig;
     SEL upd = NSSelectorFromString(@"_updateSoftwareKeyboardVisibleWithKeyboardShowing:");
     id me = self;
-    if (DMSMFree() && docked && [me respondsToSelector:upd]) ((void (*)(id, SEL, BOOL))objc_msgSend)(me, upd, YES);
+    if (DMSMFree() && [me respondsToSelector:upd]) ((void (*)(id, SEL, BOOL))objc_msgSend)(me, upd, docked);
 }
 // willHide clears the flag itself, as willShow sets it: SpringBoard clears it only from an app's keyboard (its UI position change), never for a
 // keyboard of its own -- the Dock's Downloads search field. Set by our willShow for that one and never cleared, it hid the Dock at the next layout
@@ -48690,6 +48770,7 @@ static BOOL DMSMDockOwnsKeyboard(void) {
 // search in portrait, then a turn: "in-app Dock hidden 1 (keyboard 1)").
 - (void)_keyboardWillHide:(id)n {
     gSMKeyboardShown = NO; gSMKeyboardFrame = CGRectZero;
+    DMSMSyncKeyboardDockLevel();
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[sm] keyboard will hide");
     %orig;
     SEL upd = NSSelectorFromString(@"_updateSoftwareKeyboardVisibleWithKeyboardShowing:");
@@ -48697,6 +48778,7 @@ static BOOL DMSMDockOwnsKeyboard(void) {
     if (DMSMFree() && [me respondsToSelector:upd]) { DM_FEATURE_MARK("sm-keyboard-flag-cleared-at-hide"); ((void (*)(id, SEL, BOOL))objc_msgSend)(me, upd, NO); }
 }
 - (void)_updateSoftwareKeyboardVisibleWithKeyboardShowing:(BOOL)showing {
+    DMSMWatchKeyboardFrameChanges(self);
     %orig(DMSMFree() ? (showing && gSMKeyboardShown) : showing);
 }
 - (BOOL)prefersStripHidden {
@@ -48998,12 +49080,15 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 // (DMGALightsContainerInert), and handing it the touch anyway (the "?: bar") let its tap and drag bring the window forward (logic test 6 Oct)
 - (BOOL)pointInside:(CGPoint)p withEvent:(UIEvent *)e {
     UIView *bar = objc_getAssociatedObject(self, kSMBarKey);
-    if (bar && !bar.hidden && bar.userInteractionEnabled && CGRectContainsPoint(bar.frame, p)) return YES;
+    if (bar && !bar.hidden && bar.userInteractionEnabled && CGRectContainsPoint(bar.bounds, [self convertPoint:p toView:bar])) return YES;
     return %orig;
 }
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
     UIView *bar = objc_getAssociatedObject(self, kSMBarKey);
-    if (bar && !bar.hidden && bar.userInteractionEnabled && CGRectContainsPoint(bar.frame, p)) return [bar hitTest:[self convertPoint:p toView:bar] withEvent:e] ?: bar;
+    if (bar && !bar.hidden && bar.userInteractionEnabled) {
+        CGPoint bp = [self convertPoint:p toView:bar];
+        if (CGRectContainsPoint(bar.bounds, bp)) return [bar hitTest:bp withEvent:e] ?: bar;
+    }
     return %orig;
 }
 %end
@@ -49502,7 +49587,7 @@ static void DMAutoHideSMRetop(BOOL layout, BOOL active, BOOL modeChanged) {
     BOOL atSwitch = gSMRetopPending >= 0;
     if ((!atSwitch || atHome) && now - gSMRetopAt < 1.0) return;
     if (gDMScreenOff || !gSMRestoreDone || DMSMHomeUILocked() || DMCoverSheetShown() || gOverlay || gSMGrowing.count || DMSMWorkspaceBusy() || DMSMTurnSettling()
-        || DMSwitcherVisible() || gMSWSwitching || DMSMSpotlightHolds() || now < gSMDragUntil) return;   // (the next tick)
+        || DMSMGestureLive() || DMSwitcherVisible() || gMSWSwitching || DMSMSpotlightHolds() || now < gSMDragUntil) return;   // (the next tick)
     gSMRetopAt = now;
     BOOL give = atSwitch ? gSMRetopPending == 1 : YES;
     gSMRetopPending = -1;
@@ -49539,6 +49624,7 @@ static void DMAutoHideSMRetop(BOOL layout, BOOL active, BOOL modeChanged) {
         if (fabs(f.origin.x - was.origin.x) < 0.5 && fabs(f.origin.y - was.origin.y) < 0.5 && fabs(f.size.width - was.size.width) < 0.5 && fabs(f.size.height - was.size.height) < 0.5) continue;
         if (!gSMRetopTries) gSMRetopTries = [NSMutableDictionary dictionary];
         gSMRetopTries[k] = @(tries + 1);
+        DMTitleRecordFollowDesktopSM(k, was, f);
         places[k] = [NSValue valueWithCGRect:f];
     }
     if (!places.count) return;
@@ -49883,11 +49969,11 @@ static void DMSMHookFullScreen17(void) {
 // Our engine's stage area is the whole desktop, side edge to side edge (DMSMOurStageArea), and dodging is off (-dodgeFully...: skipped above) -- but
 // the cap still kept Apple's padding and peek: Window > Fill Screen came out 1270 pt wide and centred, 48 pt from both sides, and 1226 pt wide (70 pt
 // from each side) with another window on the desktop (A12Z 18.5, KT 31 Oct: "gaps on the side"); Top and Bottom Half, Fit to Window's lone window
-// and any window resized wider the same. With our engine both side lists are our stage area's -- no inset: a window may reach the side edges, a
-// resized side snaps to the screen's edge, not 48 pt in -- and the peek is none (nothing is pushed aside to peek). Top and bottom stay Apple's: their
-// limit (48 + 48) is less than our menu bar, title bar and Dock take, so it never cuts a window of ours. Optional: a method missing or of another
+// With our engine both side lists and the top list are our stage area's -- no side inset unless the Dock stands there, and the top inset at our menu bar
+// and title bar (24 pt while the menu bar hides itself, instead of iPadOS 18.5's 61 pt padding which snapped and clamped a dragged top edge 13 to 37 pt
+// below the top) -- and the peek is none (nothing is pushed aside to peek). Optional: a method missing or of another
 // signature leaves Apple's value there (and that part of the cap). debug: /tmp/msb-sm-appleinsets = Apple's lists and peek, to compare.
-static id (*o_SMLeadingInsets17)(id, SEL, id), (*o_SMTrailingInsets17)(id, SEL, id);
+static id (*o_SMLeadingInsets17)(id, SEL, id), (*o_SMTrailingInsets17)(id, SEL, id), (*o_SMTopInsets17)(id, SEL, id);
 static double (*o_SMPeekLength17)(id, SEL);
 static unsigned gSMEdgeReach17;   // (how often a side's list or the peek was our engine's: the diagnostics record)
 static BOOL DMSMEdgeReachOurs17(void) {
@@ -49912,6 +49998,19 @@ static NSArray *DMSMSideInsets17(BOOL leading) {
 }
 static id DMSMLeadingInsets17(id self, SEL _cmd, id cfg) { id v = o_SMLeadingInsets17(self, _cmd, cfg); return DMSMEdgeReachOurs17() ? DMSMSideInsets17(YES) : v; }
 static id DMSMTrailingInsets17(id self, SEL _cmd, id cfg) { id v = o_SMTrailingInsets17(self, _cmd, cfg); return DMSMEdgeReachOurs17() ? DMSMSideInsets17(NO) : v; }
+static id DMSMTopInsets17(id self, SEL _cmd, id cfg) {
+    id v = o_SMTopInsets17(self, _cmd, cfg);
+    if (!DMSMEdgeReachOurs17() || !(gSMStatusBarOrigH >= 0)) return v;
+    CGRect b;
+    UIScreen *s = DMSMCfgBounds(cfg, &b) ? DMSMScreenOfSize(b.size) : [UIScreen mainScreen];
+    if (!s) return v;
+    BOOL tv = s != [UIScreen mainScreen];
+    CGFloat title = DMTestFlag("/tmp/msb-sm-nochrome") ? 0.0 : kSMBarH;
+    CGFloat top = !tv ? MSBDBarAHSMStageTop(gSMStatusBarOrigH, DMMenuBarHeight(), title, DMAutoHideLayout())
+                      : ((DMTVBarSizeNow() == gDMBarSize) ? MSBDBarAHSMStageTop(gSMStatusBarOrigH, DMMenuBarHeight(), title, 0)
+                                                          : fmax(gSMStatusBarOrigH, DMTVBarHeight()) + title);
+    return isfinite(top) ? @[@(MAX(0.0, top))] : v;
+}
 static id (*o_SMBottomInsets17)(id, SEL, id);
 static id DMSMBottomInsets17(id self, SEL _cmd, id cfg) {
     id v = o_SMBottomInsets17(self, _cmd, cfg);
@@ -50012,6 +50111,10 @@ static void DMSMHookEdgeReach17(void) {
         MSHookMessageEx(c, lead, (IMP)DMSMLeadingInsets17, (IMP *)&o_SMLeadingInsets17);
         MSHookMessageEx(c, trail, (IMP)DMSMTrailingInsets17, (IMP *)&o_SMTrailingInsets17);
     } else DMLog(@"[smengine] iPadOS 17's side insets for windows are not as expected here: windows keep Stage Manager's side padding (48 pt from the sides)");
+    SEL top = NSSelectorFromString(@"validTopStageAreaInsetsWithConfiguration:");
+    Method mtop = c ? class_getInstanceMethod(c, top) : NULL;
+    if (mtop && [DMSMSigOfMethod(mtop) isEqualToString:list]) MSHookMessageEx(c, top, (IMP)DMSMTopInsets17, (IMP *)&o_SMTopInsets17);
+    else DMLog(@"[smengine] iPadOS 17's top insets for windows are not as expected here: windows keep Stage Manager's top padding");
     gSMEdgeReach17In = YES;
     DMSMHookBottomInsets17();   // (Settings > Dock > Position: Apple's bottom limit for a window, with Left or Right chosen only)
     if (mp && [DMSMSigOfMethod(mp) isEqualToString:DMSMSigDouble()]) MSHookMessageEx(a, peek, (IMP)DMSMPeekLength17, (IMP *)&o_SMPeekLength17);

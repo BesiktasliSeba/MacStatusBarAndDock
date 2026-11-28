@@ -397,6 +397,7 @@ static inline uint64_t MSBDRStripSigMix(uint64_t h, uint64_t v) {
     return h;
 }
 static inline BOOL MSBDRStripTickWorks(BOOL changed, BOOL timed) { return changed || timed; }
+static inline BOOL MSBDRStripTickNeeded(BOOL on, BOOL active) { return on || active; }
 
 // ---- the motion ----
 // The i-th card's delay as the strip slides in (top to bottom, at most kMSBDRStripStaggerMax).

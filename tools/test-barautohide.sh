@@ -126,7 +126,9 @@ check "made to fail: our stage top keeping the bar's room while it hides itself 
 check "made to fail: our desktop raised to the bar while it hides itself (1.8.8.3)" "mutant smdesk $S '    CGFloat top = DMTopLimit();
     if (CGRectGetMinY(u) < top)' '    CGFloat top = DMMenuBarHeight();
     if (CGRectGetMinY(u) < top)' c_sm_top"
-check "made to fail: the iPad's own pass left as it carried it (the main screen skipped, 1.8.8.3)" "mutant smpass $S '    BOOL tv = s != [UIScreen mainScreen];' '    BOOL tv = s != [UIScreen mainScreen]; if (s == [UIScreen mainScreen] || 0) return r;' c_sm_top"
+check "made to fail: the iPad's own pass left as it carried it (the main screen skipped, 1.8.8.3)" "mutant smpass $S '    if (!s || !(gSMStatusBarAnswer > 0) || !(gSMStatusBarOrigH >= 0)) return r;
+    BOOL tv = s != [UIScreen mainScreen];' '    if (!s || !(gSMStatusBarAnswer > 0) || !(gSMStatusBarOrigH >= 0)) return r;
+    BOOL tv = s != [UIScreen mainScreen]; if (s == [UIScreen mainScreen] || 0) return r;' c_sm_top"
 check "made to fail: our windows not retopped" "mutant smretop $S '    DMAutoHideSMRetop(layout, active, modeChanged);' '' c_sm_retop"
 check "made to fail: our retop by a rule of its own (the bar's line taken as 24 exactly)" "mutant smrule $S 'BOOL moved = MSBDBarAHRetop(&y, &h, bottom, bar, give, NO);' 'BOOL moved = fabs(y - 24.0) < 0.5; if (moved) y = 0;' c_sm_retop"
 check "made to fail: the bar's room taken back without the fit (a window Stage Manager's own pass moved down first stays 24 pt past the Dock's line)" "mutant smfit $S '            id fa = a ? DMSMAttrsFitScreen(a, nil, DMSMKeySetHas(gSMBehindDock, k), DMSMKeyText(k)) : nil;' '            id fa = a;' c_sm_retop"

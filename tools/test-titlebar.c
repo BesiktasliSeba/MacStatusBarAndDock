@@ -41,13 +41,26 @@ static void Record(Win *w, int to, int k) {
 static void Place(Win *w, int to) { Record(w, to, w->fill); }   // (any placement of ours, before it moves the window)
 static void ZoomTo(Win *w, int z) { Record(w, z, z); }   // (the title bar's own Zoom: its zoomed frame is the frame its record is kept with)
 static void ByHand(Win *w, int to) { w->before = F_NONE; w->keptFill = F_NONE; w->at = to; }   // (DMTitleRecordMovedView / ...SM)
+static void ByHandSnapped(Win *w, int to) {   // (a title-bar drag that snaps to `to`: DMTitleRecordMoved... then DMTitleRecordSnapSettled...)
+    int hadBefore = w->before, hadFill = w->keptFill;
+    ByHand(w, to);
+    if (MSBDTitleRecordKeepAfterSnap(MSBDTitleKeepsFrames(w->setting), hadBefore != F_NONE, to == hadFill)) { w->before = hadBefore; w->keptFill = hadFill; }
+}
+static void DesktopRoomChanged(Win *w, int newFill) {   // (our Dock / thickness / auto-hide relayout moving a filled window to the new desktop's Fill)
+    int was = w->at;
+    w->fill = newFill;
+    if (was == w->keptFill) w->at = newFill;
+    if (MSBDTitleRecordFollowsDesktop(MSBDTitleKeepsFrames(w->setting), w->before != F_NONE, was == w->keptFill, newFill != F_NONE)) w->keptFill = newFill;
+}
 static void EngineOwn(Win *w, int to) { w->at = to; }   // (no code of ours runs)
 static void DoubleTap(Win *w) {
     int holds = MSBDTitleRecordHolds(w->before != F_NONE, w->at == w->keptFill);
     if (!holds) { w->before = F_NONE; w->keptFill = F_NONE; }   // (DMTitleRecordHeld...: a frame that no longer holds is dropped)
     int action = MSBDTitleActionFor(w->setting, false);
     int target = action == kMSBDTitleZoom ? ZoomOf(w->at) : w->fill;   // (TitleBarTap.h: Fill's frame, or the zoomed frame of where it is)
-    int step = MSBDTitleStep(action, w->at == target, holds);
+    bool atTarget = w->at == target;
+    if (action == kMSBDTitleZoom) atTarget = MSBDTitleZoomAtTarget(atTarget, holds);
+    int step = MSBDTitleStep(action, atTarget, holds);
     if (step == kMSBDTitleBack) Place(w, w->before);
     else if (step == kMSBDTitleToFill) Place(w, w->fill);
     else if (step == kMSBDTitleToZoom) ZoomTo(w, target);
@@ -201,6 +214,25 @@ int main(void) {
         Int("  ... reaching the desktop's edges on one side", edge, 1);
         Int("  ... and its own zoomed frame (a second Zoom from there moves nothing)", fixed, 1);
     }
+    // ---- 1.8.9.1 (B126): state sequences where the pre-Fill / pre-Zoom record was orphaned at Fill until changed from the Window menu ----
+    w = Fresh(F_A); DoubleTap(&w); DesktopRoomChanged(&w, F_FILL2); DoubleTap(&w);
+    Int("1.8.9.1: filled by double tap, then our Dock moves to Left or changes thickness (new Fill): double tap still goes back to A", w.at == F_A && w.before == F_NONE, 1);
+    w = FreshZoom(F_A); DoubleTap(&w);
+    if (MSBDTitleRecordFollowsDesktop(MSBDTitleKeepsFrames(w.setting), w.before != F_NONE, w.at == w.keptFill, true)) { w.at = F_ZB; w.keptFill = F_ZB; }
+    DoubleTap(&w);
+    Int("1.8.9.1: zoomed by double tap, then auto-hide menu bar retops the zoomed window: double tap still goes back to A", w.at == F_A && w.before == F_NONE, 1);
+    w = FreshZoom(F_A); DoubleTap(&w);
+    if (MSBDTitleRecordFollowsDesktop(MSBDTitleKeepsFrames(w.setting), w.before != F_NONE, w.at == w.keptFill, true)) { w.at = F_M; w.keptFill = F_M; }
+    DoubleTap(&w);
+    Int("1.8.9.1 q02: zoomed by double tap, then Dock Left -> Bottom -> Right clamps/shifts the zoomed window (ZoomOf(at) != at): double tap still goes back to A", w.at == F_A && w.before == F_NONE, 1);
+    w = Fresh(F_A); DoubleTap(&w); ByHandSnapped(&w, F_FILL); DoubleTap(&w);
+    Int("1.8.9.1: filled by double tap, then a tiny title-bar drag snaps straight back onto Fill: record kept, double tap goes back to A", w.at == F_A && w.before == F_NONE, 1);
+    w = Fresh(F_A); DoubleTap(&w); ByHandSnapped(&w, F_B); ByHandSnapped(&w, F_FILL); DoubleTap(&w);
+    Int("  ... dragged off Fill to B first, then dragged by hand onto Fill: record dropped at B and not resurrected, stays at Fill", w.at == F_FILL && w.before == F_NONE, 1);
+    Int("  ... rule guards: disabled setting or missing target never retargets or restores",
+        !MSBDTitleRecordFollowsDesktop(false, true, true, true) && !MSBDTitleRecordFollowsDesktop(true, false, true, true)
+        && !MSBDTitleRecordFollowsDesktop(true, true, false, true) && !MSBDTitleRecordFollowsDesktop(true, true, true, false)
+        && !MSBDTitleRecordKeepAfterSnap(false, true, true) && !MSBDTitleRecordKeepAfterSnap(true, false, true) && !MSBDTitleRecordKeepAfterSnap(true, true, false), 1);
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

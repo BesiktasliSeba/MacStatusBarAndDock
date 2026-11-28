@@ -96,9 +96,12 @@ sites() {   # $1 StatusBar.x, $2 quiet: the number of site checks that fail
   # (the Finder window under the key), never adds a focus, key window or level change;
   # 1.8.8.4's Recent Windows Strip: -dm_move: hands a window drag to the strip first (let go at its edge, the window is minimized as by its yellow
   # light, the same making-active of the window behind), and -minimize and -show ask it for the rect a window flies into or grows out of
-  # and tell it a window landed: an animation's target, no focus, key window or level change
-  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = 1a503625ae373385 ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = 75f2a400732e9efb ] \
-     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8, 1.8.8.1, 1.8.8.2 or 1.8.8.3 (no focus, key window or level change; NativeWindow.h: 1.8.8.3's key return, and the Recent Windows Strip's calls of 1.8.8.4)"
+  # and tell it a window landed: an animation's target, no focus, key window or level change;
+  # 1.8.9.1: NativeWindow.h raises main-screen UITextEffectsWindows over an active native window and restores their saved levels at rest, routes in-layer
+  # UIKit edit-menu overlay hits, orders visible native windows in DMNativeBringAllToFront, and follows Fill/Zoom title records on desktop relayouts:
+  # no change to MSBNativeLayer's own focus, key window or level on Aerial 5
+  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = a943d6d69abff38b ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = 75f2a400732e9efb ] \
+     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8..1.8.9.1 (no focus, key window or MSBNativeLayer level change)"
   else no "NativeWindow.h, Finder.h or KeyboardBehind.h changed"; fi
   # the trace and the kill switch are debug only
   [ "$(ifdebug "$X" 'return DMTestFlag("/tmp/msb-a5-maskold");')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskDebugAtCommit(void) {')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskTrace(UIView *stage, CGSize was, CGSize now) {')" = yes ] \

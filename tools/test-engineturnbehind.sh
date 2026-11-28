@@ -16,15 +16,16 @@ SB_FN=('static CGFloat DMA5StageShift(void) {' 'static CGRect DMA5StageFromWindo
        'static CGRect DMLayoutFrameWindow(NSString *name) {' 'static CGRect DMLayoutFrame(NSString *name) {' 'static NSString *DMOrientKey(void) {'
        'static void DMKeepStagePlace(UIView *stage, CGRect frame) {' 'static void DMSetStageIntent(UIView *stage, CGRect frame) {' 'static void DMRememberStageFrame(UIView *stage) {'
        'static CGRect DMFitInto(CGRect f, CGRect usable) {' 'static CGRect DMScaleFrame(CGRect f, CGSize from, CGSize to) {' 'static UIScreen *DMSnapScreenOf(UIView *v) {'
-       'static CGRect DMSnapWindowOfFrame(UIView *st, CGRect f) {' 'static CGRect DMSnapWindowOf(UIView *st) {'
+       'static CGRect DMSnapWindowOfFrame(UIView *st, CGRect f) {' 'static CGRect DMSnapWindowOf(UIView *st) {' 'static CGRect DMSnapEngineFrameFor(UIView *st, CGRect window) {'
        'static CGRect DMSnapFrameFor(NSString *who, CGRect window, unsigned how, const CGRect *others, int n, CGRect area) {' 'static BOOL DMDockSideKeepsOut(void) {'
        'static CGRect DMDockSideKept(CGRect window, unsigned how) {' 'static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how) {'
        '?static NSMutableSet<NSString *> *gBehindDock;' '?static BOOL DMBehindDockHas(NSString *bundle) {' '?static void DMBehindDockSet(NSString *bundle, BOOL behind, NSString *why) {'
        '?static void DMBehindDockMoveEndedAt(UIView *st, CGRect w) {' '?static void DMBehindDockMoveEnded(UIView *st) {' '?static void DMBehindDockPlacedByUs(UIView *v, NSString *why) {' '?static CGRect DMBehindDockTurnArea(NSString *bundle, CGRect usable) {'
        'static void DMSnapMoveEnded(UIView *st) {' 'static void DMNoteWindowLayouts(void) {' 'static void DMRelayoutStageWhenLanded(UIView *stage, CGSize oldSize, CGSize newSize, int attempt) {'
        'static void DMRelayoutForOrientation(CGSize oldSize, CGSize newSize) {')
-WK_FN=('static char kWinZoomKey;' 'static NSArray<NSValue *> *DMTitleRecordPair(CGRect before, CGRect fill' '?static BOOL DMTitleRecordIs(id r) {' '?static BOOL DMTitleRecordBehind(NSArray *r) {'
-       'static void DMTitleRecordMovedView(UIView *v) {' 'static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill' 'static void DMTitleRecordEngineTo(UIView *v, CGRect to) {'
+WK_FN=('static char kWinZoomKey;' '?static char kWinZoomSnapKey;' 'static NSArray<NSValue *> *DMTitleRecordPair(CGRect before, CGRect fill' '?static BOOL DMTitleRecordIs(id r) {' '?static BOOL DMTitleRecordBehind(NSArray *r) {'
+       '?static void DMTitleRecordStoreView(UIView *V, id rec) {' 'static void DMTitleRecordMovedView(UIView *v) {' '?static void DMTitleRecordSnapSettledView(UIView *v, CGRect finalFrame) {'
+       'static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill' 'static void DMTitleRecordEngineTo(UIView *v, CGRect to) {'
        'static NSValue *DMTitleRecordHeldView(UIView *v, CGRect now, NSString *who) {' '?static BOOL DMTitleRecordBehindView(UIView *v) {')
 TB_FN=('static void DMTitleTapEngineWindow(NSString *bundleID, NSString *why) {')
 MSW_FN=('static void DMMSWFitTurned(UIView *st, NSInteger fromId) {')

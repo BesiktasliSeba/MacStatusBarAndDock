@@ -34,13 +34,14 @@ static void DMAutoHideUnshift(UIView *st) { (void)st; }
 static void DMAerialMoveStage(UIView *st, CGRect f, id how) { (void)how; st.frame = f; }
 
 // ---- ours (DMAutoHideSMRetop): the stage on screen is gTWindows (key -> its attributes, test-smpastedge.m's TAttrs) ----
-static BOOL gSMRestoreDone = YES, gMSWSwitching = NO, gTBusy = NO, gDMScreenOff = NO;
+static BOOL gSMRestoreDone = YES, gMSWSwitching = NO, gTBusy = NO, gTLiveGesture = NO, gDMScreenOff = NO;
 static id gOverlay;
 static NSMutableDictionary *gSMGrowing;
 static BOOL DMSMHomeUILocked(void) { return NO; }
 static BOOL DMCoverSheetShown(void) { return NO; }
 static BOOL DMSMWorkspaceBusy(void) { return gTBusy; }
 static BOOL DMSMTurnSettling(void) { return NO; }
+static BOOL DMSMGestureLive(void) { return gTLiveGesture; }
 static BOOL DMSwitcherVisible(void) { return NO; }
 static BOOL DMSMSpotlightHolds(void) { return NO; }
 static BOOL gTStageOnTV = NO;
@@ -72,10 +73,14 @@ static BOOL DMSMApplyPlacesMarkedIn(NSDictionary<NSString *, id> *places, id sta
     }
     return YES;
 }
+static void DMTitleRecordFollowDesktopView(UIView *v, CGRect oldFill, CGRect newFill) { (void)v; (void)oldFill; (void)newFill; }
+static void DMTitleRecordFollowDesktopSM(NSString *key, CGRect oldFill, CGRect newFill) { (void)key; (void)oldFill; (void)newFill; }
 #include "aht-retop.inc"   // (StatusBar.x: DMAutoHideRetopAll and its keys; DMAutoHideSMRetop, DMAutoHideSMWindowFrame, its globals; DMSMPastEdgeMoved, DMSMAttrsForFrameIn)
 
 // ---- our title bars: DMSMBarFrame as on iPadOS 16 (the bar on the card's top edge, 24 pt) ----
 static CGRect DMSMBarFrame(UIView *card) { return CGRectMake(0, -kSMBarH, card.bounds.size.width, kSMBarH); }
+static int gTChromeRaised = 0;
+static void DMSMChromeOnTop(UIView *card, UIView *bar) { (void)card; if (bar.superview) { [bar.superview bringSubviewToFront:bar]; gTChromeRaised++; } }
 static NSHashTable *gSMBars;
 #include "aht-slide.inc"   // (StatusBar.x: gSMSlideBarH, DMAutoHideSMSlideFor, DMSMBarFrameNow, DMAutoHideSMSlideDrawn, DMAutoHideSMBarDragged, DMAutoHideSMSlideBars, DMAutoHideSMBake)
 // ---- a new window: the other engines' DMNewWindowFrameWindowAt and ours, DMSMNewWindowDesk / DMSMNewWindowFrameAt ----
@@ -118,6 +123,12 @@ static void SBCard(void) {   // (after Setup: its card replaced by SpringBoard's
     [gCard removeFromSuperview]; [gSup addSubview:c];
     gCard = c; gBar.card = c;
 }
+@interface TTapTouch : KTouch
+@property (nonatomic, weak) UIView *kView;
+@end
+@implementation TTapTouch
+- (UIView *)view { return self.kView; }
+@end
 
 int main(void) {
     @autoreleasepool {
@@ -188,6 +199,11 @@ int main(void) {
         Check(gTRequests == 0 && gSMRetopPending == 0, @"retop, off while a transition is in flight: waits (pending)");
         gTBusy = NO; DMAutoHideSMRetop(NO, NO, NO);
         Check(gTRequests == 1 && RectNear(WholeOf(kA), wLine) && gSMRetopPending == -1, @"  ... done at the next tick");
+        PutSM(kA, CGRectMake(100, 0, 500, 400));
+        gTLiveGesture = YES; gTRequests = 0; DMAutoHideSMRetop(NO, NO, YES);
+        Check(gTRequests == 0 && gSMRetopPending == 0, @"retop, while a Stage Manager resize or move gesture is live: waits (never yanks a dragged top edge)");
+        gTLiveGesture = NO; DMAutoHideSMRetop(NO, NO, NO);
+        Check(gTRequests == 1 && RectNear(WholeOf(kA), wLine) && gSMRetopPending == -1, @"  ... done once the live gesture ends");
         // (a switch at the Home Screen, no stage shown: it waits for the stage to be shown again)
         PutSM(kA, CGRectMake(100, 0, 500, 400));
         gTNoStage = YES; gTRequests = 0; DMAutoHideSMRetop(NO, NO, YES); DMAutoHideSMRetop(NO, NO, NO);
@@ -222,6 +238,20 @@ int main(void) {
         DMAutoHideSMSlideBars(YES, 24.0, NO);
         Check(Near(gBar.frame.origin.y, 0) && Near(DMAutoHideSMSlideDrawn(gBar), 24) && Near(DMAutoHideSMSlideDrawn(gBar), MSBDBarAHTitleSlide(0, 24, 23, 1)),
               [NSString stringWithFormat:@"slide: the bar shows over a window at the top edge: its title bar 24 pt down over the app, as the other engines' (bar at %.1f)", gBar.frame.origin.y]);
+        {
+            UIView *content = [[UIView alloc] initWithFrame:gCard.bounds];
+            [gCard addSubview:content];   // (SpringBoard puts _killScrollView above our bar in _SBFActualClippingView)
+            UIButton *yellow = [UIButton buttonWithType:UIButtonTypeCustom]; yellow.frame = CGRectMake(28, 2, 20, 20); [gBar addSubview:yellow];
+            DMAutoHideSMSlideBars(YES, 24.0, YES);
+            UIView *hit = [gCard hitTest:CGPointMake(38, 12) withEvent:nil];
+            UITapGestureRecognizer *singleTap = [[UITapGestureRecognizer alloc] initWithTarget:nil action:nil];
+            TTapTouch *lt = [TTapTouch new];
+            lt.kAt = CGPointMake(38, 12); lt.kPhase = UITouchPhaseBegan; lt.kType = UITouchTypeDirect; lt.kWin = gCard.window; lt.kView = yellow;
+            BOOL tapTakesLight = [gBar gestureRecognizer:singleTap shouldReceiveTouch:lt];
+            Check(((TSBCard *)gCard).clip.subviews.lastObject == gBar && hit == yellow && !tapTakesLight,
+                  @"slide: a slid title bar stays above the card's content, hits its traffic light during the 0.25 s slide, and the bar's single-tap leaves UIControl touches to the light");
+            [yellow removeFromSuperview]; [content removeFromSuperview];
+        }
         Check(CGRectEqualToRect(DMSMBarFrameNow(gCard, gBar), gBar.frame), @"slide: ... and the card's own layout keeps it (the bar's frame worked out the same)");
         DMAutoHideSMSlideBars(NO, 0, NO);
         Check(Near(gBar.frame.origin.y, -24) && Near(DMAutoHideSMSlideDrawn(gBar), 0), @"slide: the bar hides: the title bar back up");

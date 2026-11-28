@@ -180,6 +180,14 @@ check('M10 a grip\'s fact drawn only while fresh (its lease, no change of iPadOS
 sh = fn(M, '- (void)setPointerShape:(id)shapeObj animated:(BOOL)animated completion:(id)completion {')
 check('M11 the shape count goes up at a real change of iPadOS\'s shape only (not the same shape again), before the update',
       before(sh, 'if (before && [before isEqual:shapeObj]) return;', 'gMPShapeSeq++;') and before(sh, 'gMPShapeSeq++;', 'MPUpdate((PUIDPointerShapeView *)self);'))
+nv = fn(M, 'static NSArray<UIView *> *MPNativeViews(UIView *view) {')
+A = rd('statusbar/macpointer/MPAside.h')
+pc = fn(A, 'static inline BOOL MPAsideClassIsPUID(Class c) {')
+check('M15 iPadOS 18\'s morphing shape view under resize bands is hidden with the round pointer (ivar and PUID subviews, never another library\'s) and restored before a real shape change',
+      '"_pointerShapeMorphingView"' in nv and 'MPAsideHeldBy(view, [UIView class], held, 0, 64)' in nv and 'MPAsideClassIsPUID(object_getClass(sub))' in nv
+      and 'MPAsideClassIsOther(object_getClass(sub))' in nv and '!strncmp(cn, "PUID", 4)' in pc and 'MPAsideClassIsOther(c)' in pc
+      and before(sh, 'for (UIView *v in hid) v.layer.hidden = NO;', '%orig(shapeObj, morph, completion);')
+      and before(sh, 'if (main && (!before || ![before isEqual:shapeObj])) {', 'for (UIView *v in hid) v.layer.hidden = NO;'))
 check('M12 a grip\'s word starts its lease and draws again when it ends with no newer word; any word ends a drag\'s grace',
       'gMPResizeGripAt = CACurrentMediaTime(); gMPResizeGripSeq = gMPShapeSeq;' in ct and 'if (gMPResizeWord == w) MPUpdateAll();   // (no newer word: the lease is over)' in ct
       and 'MSBDResizeLatchWord(&gMPResizeLatch);' in ct and before(ct, 'gMPResizeWord = w;', 'MSBDResizeLatchWord(&gMPResizeLatch);'))
@@ -239,7 +247,7 @@ if sites "$R"; then :; else FAILS=$((FAILS + 1)); fi
 echo "== 3. made-to-fail copies (each must fail)"
 mtf() {   # mtf <label> <file> <perl substitution>: a copy of the tree with that change must fail the sites (or, for the header, the unit test)
   local d="$W/m"; rm -rf "$d"; mkdir -p "$d/statusbar/macpointer" "$d/common" "$d/tools" "$d/macsettings"
-  cp ../statusbar/macpointer/MacPointer.x "$d/statusbar/macpointer/"; cp ../statusbar/StatusBar.x ../statusbar/ResizeFact.h ../statusbar/PointerRegion.h "$d/statusbar/"; cp ../tools/crashmap-rules.txt "$d/tools/"
+  cp ../statusbar/macpointer/MacPointer.x ../statusbar/macpointer/MPAside.h "$d/statusbar/macpointer/"; cp ../statusbar/StatusBar.x ../statusbar/ResizeFact.h ../statusbar/PointerRegion.h "$d/statusbar/"; cp ../tools/crashmap-rules.txt "$d/tools/"
   cp ../macsettings/PointerSettings.x "$d/macsettings/"; cp ../common/MacResizeCursor.h "$d/common/"
   perl -0pi -e "$3" "$d/$2"
   if cmp -s "$d/$2" "../$2"; then echo "FAIL  made-to-fail ($1): the change did not apply"; FAILS=$((FAILS + 1)); return; fi
@@ -258,6 +266,8 @@ mtf "the crash piece left out" tools/crashmap-rules.txt 's/target resizePointers
 mtf "the Pointer page's words on every iPadOS" macsettings/PointerSettings.x 's/osMajor >= 18 \?/osMajor >= 15 ?/'
 mtf "the path compared by pointer" statusbar/macpointer/MacPointer.x 's/&& hasKey == wantKey\)/\&\& a.path == wantPath)/'
 mtf "the views counted over a beam" statusbar/macpointer/MacPointer.x 's/\(!beamShape && ctl \? MPAccessoryViewsShown\(ctl\) : 0\)/(ctl ? MPAccessoryViewsShown(ctl) : 0)/'
+mtf "iPadOS 18's morphing shape view left shown behind the resize glyph" statusbar/macpointer/MacPointer.x 's/if \(MPAsideIn\(\(__bridge const void \*\)sub, held, nh\) \|\| MPAsideClassIsPUID\(object_getClass\(sub\)\)\) \[m addObject:sub\];/(void)held; (void)nh;/'
+mtf "previously hidden native views not given back to iPadOS before a shape change" statusbar/macpointer/MacPointer.x 's/            for \(UIView \*v in hid\) v\.layer\.hidden = NO;\n            \[hid removeAllObjects\];\n//'
 mtf "the new beam rule on 15-17 too" statusbar/macpointer/MacPointer.x 's/\(NSOperatingSystemVersion\)\{18, 0, 0\}\] \? 1 : 0;/(NSOperatingSystemVersion){15, 0, 0}] ? 1 : 0;/'
 mtf "the last SpringBoard's word left" statusbar/ResizeFact.h 's/    if \(!cleared && gDMPtrResizeOn\) \{ cleared = YES; DMRZSay\(0\); \}\n//'
 mtf "Mac Resize Pointers: off says 0 only, on says nothing" statusbar/ResizeFact.h 's/        gRZOn = on;\n        DMRZSay\(0\);[^\n]*\n        if \(on\) DMRZInstall\(\); else gRZOwner = nil;/        gRZOn = on;\n        if (on) DMRZInstall(); else { DMRZSay(0); gRZOwner = nil; }/'

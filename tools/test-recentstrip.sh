@@ -401,6 +401,10 @@ ck "review 1.8.8.4: a window drag's drop zone follows a turn during the drag (th
     && [ \"\$(grep -n 'if (!CGSizeEqualToSize(sc, gRStripDragScreen)) {' \"$W/drag\" | cut -d: -f1)\" -lt \"\$(grep -n 'BOOL inZone = joins' \"$W/drag\" | cut -d: -f1)\" ]"
 ck "review 1.8.8.4: nothing at rest while a reveal waits for an event (a pointer held in the band, the Window menu's under VoiceOver): the rules' MSBDRStripRevealTimed" \
    "grep -qF 'BOOL timed = MSBDRStripRevealTimed(gRStripReveal, gRStripPointerOutAt > 0, menuLike && DMRStripAssistive()) || gRStripPointerOutAt > 0' \"$W/tick\" && ! grep -qF 'BOOL timed = gRStripReveal ||' \"$W/tick\""
+ck "1.8.9.1: the 0.2 s watcher skips DMRStripTick while the strip is off and idle, and DMRStripTick checks DMRStripOn() before gRStripTicks++ and DMRStripHomeBandStep()" \
+   "grep -qF 'if (DMRStripTickNeeded()) DM_PERF(\"rstrip\", DMRStripTick());' \"$W/watcher\" \
+    && grep -qF 'static BOOL DMRStripTickNeeded(void) { return MSBDRStripTickNeeded(DMRStripOn(), gRStripActive); }' $H \
+    && [ \"\$(grep -n 'if (!DMRStripOn()) {' \"$W/tick\" | head -1 | cut -d: -f1)\" -lt \"\$(grep -n 'gRStripTicks++;' \"$W/tick\" | head -1 | cut -d: -f1)\" ]"
 ck "no em or en dash in the strip's files" "! grep -nP '\\x{2014}|\\x{2013}' $H $R test-recentstrip.m test-recentstrip.sh 2>/dev/null && ! LC_ALL=C grep -n \$'\\xe2\\x80\\x94\\|\\xe2\\x80\\x93' $H $R test-recentstrip.m test-recentstrip.sh"
 
 echo "== made-to-fail copies of the rules (each must fail)"
@@ -506,4 +510,5 @@ mut "a flight's peek rests" 'if (kind == MSBDRStripRevealFlight) return YES;
     if (kind == MSBDRStripRevealMenu'
 mut "the Window menu's reveal rests and never ends" 'if (kind == MSBDRStripRevealMenu || kind == MSBDRStripRevealHandle) return !assistive;' 'if (kind == MSBDRStripRevealMenu || kind == MSBDRStripRevealHandle) return NO;'
 mut "the Window menu's reveal works every tick under VoiceOver" 'if (kind == MSBDRStripRevealMenu || kind == MSBDRStripRevealHandle) return !assistive;' 'if (kind == MSBDRStripRevealMenu || kind == MSBDRStripRevealHandle) return YES;'
+mut "the step runs every 0.2 s while off" 'static inline BOOL MSBDRStripTickNeeded(BOOL on, BOOL active) { return on || active; }' 'static inline BOOL MSBDRStripTickNeeded(BOOL on, BOOL active) { return YES; }'
 exit $rc

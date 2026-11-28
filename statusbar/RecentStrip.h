@@ -43,6 +43,7 @@ static int gRStripFit;                                           // (the last la
 static BOOL gRStripHomeBand = NO;                                // the Home Screen keeps the strip's band free (DMRStripHomeBandStep): with every window minimized it shows there
 static double gRStripHomeRoom = 0;                               // ... the band's width the Home Screen keeps now (0 none), on gRStripHomeRight's side
 static BOOL gRStripHomeRight = NO;
+static BOOL gRStripActive = NO;                                  // YES while the strip has run or handed a band since its last reset
 static NSMutableDictionary<NSString *, UIView *> *gRStripPics;   // key -> its window's picture (a view of a render server slot), card size
 static NSMutableDictionary<NSString *, NSNumber *> *gRStripPicAt;    // key -> when it was taken
 static NSMutableDictionary<NSString *, NSNumber *> *gRStripPicDue;   // key -> when its picture after leaving the front is due
@@ -964,7 +965,7 @@ __attribute__((noinline)) static void DMRStripHomeBandStep(void) {
     else if (room > 0.0 ? DMRStripTwinHook() : gRStripTwinHooked) { gRStripHomeRoom = room; gRStripHomeRight = right; DMRStripTwinRelayout(); kept = room > 0.0; }
     gRStripHomeRoom = room; gRStripHomeRight = right; handed = room; handedRight = right;
     gRStripHomeBand = kept && room > 0.0;
-    if (gRStripHomeBand) DM_FEATURE_MARK("recent-strip-home-band");
+    if (gRStripHomeBand) { gRStripActive = YES; DM_FEATURE_MARK("recent-strip-home-band"); }
     DMLog([NSString stringWithFormat:@"[recentstrip] the Home Screen %@ (%@)", gRStripHomeBand ? [NSString stringWithFormat:@"keeps a band of %.0f pt free at its %@", room, right ? @"right" : @"left"] : @"keeps no band",
            dockRoom ? @"the Dock part's page frames" : gRStripTwinHooked ? @"our own page frames" : @"no page frames to place"]);
     if (gDesktop) [gDesktop dm_placeAgain];   // (the desktop's files and notes beside it, or back)
@@ -1010,6 +1011,7 @@ static void DMRStripShowAs(MSBDRStripShow show, NSString *why) {
         return;
     }
     DM_FEATURE_MARK("recent-strip-shown");
+    gRStripActive = YES;
     DMLog([NSString stringWithFormat:@"[recentstrip] %@ (%@): %@", show == MSBDRStripOverWindows ? @"comes out over the windows" : @"shows on the desktop", why, [gRStripItems componentsJoinedByString:@", "]]);
     if (!w) return;
     CGFloat level = DMDesiredWindowLevel() + 0.5;   // (just above the windows: over every engine window, under the Dock's floor, Finder and our menus)
@@ -1078,6 +1080,7 @@ static void DMRStripReset(NSString *why) {
 // respring's set before, else now), its place, and its picture right before it goes (MSBDRStripPicAtEntry: what you saw when you sent it).
 __attribute__((noinline)) static void DMRStripWillMinimize(UIView *stage) {
     if (!stage || !DMRStripOn()) return;
+    gRStripActive = YES;
     NSString *k = DMStageBundle(stage);
     if (!k.length) return;
     NSArray *p = objc_getAssociatedObject(stage, kRStripPendingKey);
@@ -1887,13 +1890,19 @@ static MSBDRStripShow DMRStripApplyShow(BOOL laid, BOOL covered, NSString *why) 
                                 : gRStripReveal == MSBDRStripRevealFlight ? @"a window flew in" : @"the desktop is free"));
     return show;
 }
+static BOOL DMRStripTickNeeded(void) { return MSBDRStripTickNeeded(DMRStripOn(), gRStripActive); }
 __attribute__((noinline)) static void DMRStripTick(void) {
-    gRStripTicks++;
-    DMRStripHomeBandStep();   // (the Home Screen's band: a few numbers; handed on only when it changes)
     if (!DMRStripOn()) {
-        if ((gRStripWindow && !gRStripWindow.hidden) || gRStripCards.count || gRStripPics.count || gRStripGhosts.count || gRStripSysHover) DMRStripReset(@"switched off, or not this engine");
+        if (gRStripActive) {
+            DMRStripHomeBandStep();
+            if ((gRStripWindow && !gRStripWindow.hidden) || gRStripCards.count || gRStripPics.count || gRStripGhosts.count || gRStripSysHover) DMRStripReset(@"switched off, or not this engine");
+            if (!gRStripHomeBand && !(gRStripHomeRoom > 0.0)) gRStripActive = NO;
+        }
         return;
     }
+    gRStripActive = YES;
+    gRStripTicks++;
+    DMRStripHomeBandStep();   // (the Home Screen's band: a few numbers; handed on only when it changes)
     if (!DMWindowWorkNeeded() && !gRStripGhosts.count && !gRStripGone.count && !gNativeWindows.count) { gRStripStageOf = nil; DMRStripShowAs(MSBDRStripHidden, @"no window"); DMRStripSysHoverUpdate(NO); return; }
     CFTimeInterval now = CACurrentMediaTime();
     // (nothing at rest: the look is skipped while nothing it reads changed and nothing time-bound waits -- the rules' MSBDRStripTickWorks)

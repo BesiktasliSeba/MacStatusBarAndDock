@@ -30,6 +30,10 @@ static void Check(BOOL ok, NSString *what, NSString *detail) {
 @implementation PUIDPointerShapeView
 - (void)setPointerShape:(id)shape animated:(BOOL)animated completion:(id)completion { (void)shape; (void)animated; (void)completion; }
 @end
+@interface PUIDPointerShapeMorphingView : UIView
+@end
+@implementation PUIDPointerShapeMorphingView
+@end
 @interface PUIDPointerRenderingRootViewController : UIViewController {
 @public
     UIView *_pointerShapeView, *_pointerRootView;
@@ -308,6 +312,10 @@ int main(int argc, char **argv) {
         CALayer *spec = [CALayer layer]; spec.backgroundColor = [UIColor whiteColor].CGColor; [p.view.layer addSublayer:spec]; p.vc->_specularLayer = spec;
         Check(Seen(p) == 0, @"a layer on the pointer view that pointeruid's controller holds in an ivar (its own effect): not seen", Bits(Seen(p)));
         p.vc->_specularLayer = nil; Check(Seen(p) == MSBD_MP_SEEN_LAYER, @"  ... the same layer held by nobody: seen", Bits(Seen(p))); [spec removeFromSuperlayer];
+        PUIDPointerShapeMorphingView *morph = [[PUIDPointerShapeMorphingView alloc] initWithFrame:CGRectMake(0, 0, 35, 14)]; morph.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.85]; [p.view addSubview:morph];
+        Check(MPAsideClassIsPUID([PUIDPointerShapeMorphingView class]) && !MPAsideClassIsPUID(otherView) && !MPAsideClassIsPUID([UIView class]) && Seen(p) == 0,
+              @"pointeruid's morphing shape subview (PUIDPointerShapeMorphingView, even with no ivar holding it): its own class, not seen as another pointer", Bits(Seen(p)));
+        [morph removeFromSuperview];
         UIView *ov = [[otherView alloc] initWithFrame:CGRectMake(300, 300, 20, 20)]; ov.backgroundColor = [UIColor blackColor]; [p.root addSubview:ov];
         Check(Seen(p) == MSBD_MP_SEEN_CLASS, @"a view of the other library's own class in the pointer's root view, showing: seen", Bits(Seen(p)));
         ov.hidden = YES; Check(Seen(p) == 0, @"  ... hidden: not seen", Bits(Seen(p))); [ov removeFromSuperview];

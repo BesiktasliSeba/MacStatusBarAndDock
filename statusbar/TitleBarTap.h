@@ -37,10 +37,11 @@ static void DMTitleTapNative(DMNativeWindow *w, NSString *why) {
     if (CGRectIsNull(target)) return;
     BOOL atTarget = MSBDWinNear(w.frame, target);
     NSValue *rec = DMTitleRecordHeldView(w, w.frame, w.title ?: @"our window");   // (the frame it had just before Fill or Zoom -- a tile too, regression F2 -- while it holds, P4-1)
+    if (zoom) atTarget = MSBDTitleZoomAtTarget(atTarget, rec != nil);
     int step = MSBDTitleStep(action, atTarget, rec != nil);
     if (step == kMSBDTitleBack) {
         w.restoreFrame = CGRectNull; w.layoutName = nil;
-        CGRect f = rec.CGRectValue;
+        CGRect f = MSBDWinPrevBackFrame(rec.CGRectValue, fill, w.minSize);
         DMTitleRecordNativeTo(w, f);   // (back: dropped)
         MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ w.frame = f; }, nil);
         DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ back to %@", why, w.title ?: @"our window", NSStringFromCGRect(f)]);
@@ -71,6 +72,7 @@ static void DMTitleTapSMWindow(NSString *key, NSString *why) {
     if (CGRectIsNull(target)) return;
     BOOL atTarget = MSBDWinNear(now.CGRectValue, target);
     NSValue *rec = DMTitleRecordHeldSM(key, now.CGRectValue);   // (Fill's and Zoom's: the frame it had just before -- a Fit tile too, regression F2 -- while it holds, P4-1)
+    if (zoom) atTarget = MSBDTitleZoomAtTarget(atTarget, rec != nil);
     int step = MSBDTitleStep(action, atTarget, rec != nil);
     DMSMStripPresentationEnd([NSString stringWithFormat:@"%@ on %@", why, DMSMKeyText(key)]);   // (a strip a swipe brought out goes before the window's frame changes, as for a light: review 1.8.4.4 L3)
     for (NSString *k in [gSMTurnPlaced allKeys]) if (DMSMKeyCovers(key, k)) [gSMTurnPlaced removeObjectForKey:k];   // (placed now, as a layout)
@@ -80,6 +82,7 @@ static void DMTitleTapSMWindow(NSString *key, NSString *why) {
         //  it back exactly -- 1.8.7.5. It is the user's place: named as such, the place applier keeps the mark)
         BOOL behind = DMTitleRecordBehindSM(key);
         DMTitleRecordSMTo(key, stage, rec.CGRectValue);   // (back: dropped)
+        if (!behind) rec = [NSValue valueWithCGRect:MSBDWinPrevBackFrame(rec.CGRectValue, DMSMLayoutFrameIn(@"fill", u, scr), CGSizeZero)];
         if (behind) { if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set]; [gSMBehindDock addObject:key]; }
         BOOL ok = DMSMApplyPlacesMarkedIn(@{key: rec}, stage, behind ? [NSSet setWithObject:key] : nil);
         if (!ok && behind) DMSMKeySetRemove(gSMBehindDock, key);   // (not placed: it stays where Fill or Zoom put it, above the Dock)
@@ -119,9 +122,11 @@ static void DMTitleTapEngineWindow(NSString *bundleID, NSString *why) {
     if (CGRectIsNull(target)) return;
     BOOL atTarget = MSBDWinNear(v.frame, target);
     NSValue *rec = DMTitleRecordHeldView(v, v.frame, bundleID);   // (Fill's and Zoom's: the frame it had just before -- a Fit tile too, regression F2 -- while it holds, P4-1)
+    if (zoom) atTarget = MSBDTitleZoomAtTarget(atTarget, rec != nil);
     int step = MSBDTitleStep(action, atTarget, rec != nil);
     CGRect to = step == kMSBDTitleBack ? rec.CGRectValue : target;
     BOOL behind = step == kMSBDTitleBack && DMTitleRecordBehindView(v);   // (behind the Dock, as the user left it, when Fill or Zoom took the record: read before Back drops it)
+    if (step == kMSBDTitleBack && !behind) to = MSBDWinPrevBackFrame(to, fill, DMEngineWindowMin());
     if (step == kMSBDTitleToZoom) { DMTitleRecordView(v, v.frame, to, to, DMBehindDockHas(bundleID)); DMBehindDockPlacedByUs(v, @"zoomed by its title bar"); }   // (Zoom's record kept with the zoomed frame: taken from elsewhere, kept there; the mark with it)
     else DMTitleRecordEngineTo(v, to);   // (to Fill: the frame now kept, MSBDTitleBackTakes; back: dropped -- as for every placement of ours)
     if (behind) DMBehindDockSet(bundleID, YES, @"back from Fill or Zoom to where the user left it");   // (Back: the mark Fill or Zoom took, given back -- 1.8.7.5, as on Stage Manager)

@@ -90,9 +90,14 @@ static int gBuilds, gDecisions;              // window lists built (DMAllWindows
 @end
 static NSMutableArray<DMNativeWindow *> *gNativeWindows;   // front last
 static UIView *gNativeRotator;
+static UIView *gNativeKeys;
 static UIView *gOverlay;
 static BOOL gNativeAway;
 static const CGFloat kScreenW = 1366, kScreenH = 1024, kBarH = 24;
+static BOOL DMViewNearlyScreen(UIView *v) {
+    CGSize b = v.frame.size;
+    return (b.width >= kScreenW * 0.9 && b.height >= kScreenH * 0.75) || (b.height >= kScreenW * 0.9 && b.width >= kScreenH * 0.75);
+}
 static CGRect DMNativeDesktop(void) { return CGRectMake(0, kBarH, kScreenW, kScreenH - kBarH); }
 
 // ---- the rest of SpringBoard the real code asks

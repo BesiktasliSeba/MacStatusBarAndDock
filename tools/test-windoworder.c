@@ -49,6 +49,41 @@ int main(void) {
     Int("an engine's own raise that did not take (Aerial 5's answer by its own record): the window put in front by its place", MSBDRaiseNeedsOrder(false, true), 1);
     Int("  ... it took: nothing more", MSBDRaiseNeedsOrder(true, true), 0);
     Int("  ... a window that does not show (minimized, on its way out): never put in front", MSBDRaiseNeedsOrder(false, false), 0);
+    {   // 1.8.9.1 (B127): Window > Bring All to Front with a big window in front and smaller covered windows behind it
+        CGRect big = CGRectMake(0, 24, 1024, 700), s1 = CGRectMake(120, 80, 420, 320), s2 = CGRectMake(260, 140, 400, 300), med = CGRectMake(60, 50, 760, 520), side = CGRectMake(500, 40, 520, 680);
+        bool sh4[] = { true, true, true, true }, sh3[] = { true, true, true };
+        // Same app with [Other, Small1, Small2, Big]: Big was already in front of Small1 and Small2 (so MSBDOrderAppToFront saw no move at [0, 1, 1, 1]!).
+        // Now Small1 and Small2 rise above Big, keeping [Small1, Small2] order, while Other stays at the back.
+        int apps1[] = { 0, 1, 1, 1 };
+        CGRect fr1[] = { side, s1, s2, big };
+        int n = MSBDOrderBringAllToFront(apps1, fr1, sh4, 4, 1, out);
+        int want1[] = { 0, 3, 1, 2 };
+        Seq("1.8.9.1 Bring All to Front: two smaller windows of the app behind its big front window rise above it, keeping their relative order", out, n, want1, 4);
+        // Asked again once [Other, Big, Small1, Small2] is settled: idempotent (nothing moves).
+        int apps1b[] = { 0, 1, 1, 1 };
+        CGRect fr1b[] = { side, big, s1, s2 };
+        n = MSBDOrderBringAllToFront(apps1b, fr1b, sh4, 4, 1, out);
+        int same4[] = { 0, 1, 2, 3 };
+        Seq("  ... asked again once the smaller windows are in front: nothing moves", out, n, same4, 4);
+        // Nested covering [Small1, Medium, Big] of the same app (Big covers Medium & Small1; Medium covers Small1): ends [Big, Medium, Small1].
+        int apps2[] = { 1, 1, 1 };
+        CGRect fr2[] = { s1, med, big };
+        n = MSBDOrderBringAllToFront(apps2, fr2, sh3, 3, 1, out);
+        int want2[] = { 2, 1, 0 };
+        Seq("  ... nested sizes [Small, Medium, Big] end [Big, Medium, Small] so all three show", out, n, want2, 3);
+        // Uncovered sibling stays behind BigLeft while covered sibling rises above BigLeft: [Small1, SideUncovered, BigLeft] -> [SideUncovered, BigLeft, Small1].
+        CGRect bigLeft = CGRectMake(0, 24, 700, 700);
+        CGRect fr3[] = { s1, side, bigLeft };
+        n = MSBDOrderBringAllToFront(apps2, fr3, sh3, 3, 1, out);
+        int want3[] = { 1, 2, 0 };
+        Seq("  ... an uncovered sibling behind the big window keeps its relative place while the covered one rises above", out, n, want3, 3);
+        // Single-window front app (Aerial / Zetsu / MilkyWay4, or 1 window per app on Stage Manager) covering smaller windows: un-buries them in order.
+        int appsSingle[] = { 2, 3, 1 };
+        CGRect frSingle[] = { s1, s2, big };
+        n = MSBDOrderBringAllToFront(appsSingle, frSingle, sh3, 3, 1, out);
+        int wantSingle[] = { 2, 0, 1 };
+        Seq("  ... single-window front app covering smaller windows: lifts covered smaller windows in their relative order", out, n, wantSingle, 3);
+    }
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

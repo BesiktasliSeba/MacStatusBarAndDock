@@ -35,6 +35,7 @@ enum { MSBDDockBottom = 0 };
 static NSMutableArray<NSString *> *gTFront;
 static void DMSMBringToFront(NSString *key) { [gTFront addObject:key ?: @"(nil)"]; }
 static void DMTitleRecordMovedSM(NSString *key) { (void)key; }
+static void DMTitleRecordSnapSettledSM(NSString *key, CGRect settled) { (void)key; (void)settled; }
 static BOOL gTSnap; static CGPoint gTSnapAt;
 static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *at) { (void)key; (void)card; (void)t; if (gTSnap) *at = gTSnapAt; return gTSnap; }
 #ifndef SPE_REAL_BAKE   // (1.8.8.4: a drag that starts on a title bar slid down with the menu bar -- the real one runs in test-autohidetop.sh; none is slid here)

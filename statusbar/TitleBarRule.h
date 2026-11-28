@@ -62,6 +62,12 @@ static inline int MSBDTitleStep(int action, bool atTarget, bool hasRecord) {
         default: return kMSBDTitleDoNothing;
     }
 }
+// In Zoom mode, a window whose pre-Zoom / pre-Fill record still holds (MSBDTitleRecordHolds: it is still at its recorded target, including after
+// MSBDTitleRecordFollowsDesktop clamped or shifted that zoomed frame when the Dock moved Left -> Bottom -> Right) is still in its zoomed state,
+// even when clamping changed its aspect ratio or off-centre position so MSBDTitleZoomFrame(now, desk, min) would compute a fresh zoom.
+static inline bool MSBDTitleZoomAtTarget(bool atFreshZoom, bool recordHolds) {
+    return atFreshZoom || recordHolds;
+}
 // Zoom's frame (KT, 7 Nov ~21:50): the window grown -- or shrunk, where it is bigger than the desktop (after a turn) -- as far as it fits in the
 // desktop with its own aspect ratio, and centred there: the side it reaches is the desktop's edge to edge, exactly; the other is in whole points,
 // centred. desk: the Fill layout's frame in the window's own frames (under the menu bar, above the Dock, beside a Dock at a side; on Stage Manager
@@ -121,6 +127,18 @@ static inline int MSBDTitleRecordOnPlaceAt(bool keepsFrames, bool toFill, bool a
 // green light (-maxButtonAction:), which ours turns into full screen, and its own double tap on the resize grip (-sizeChangeDoubleTap:) turns
 // its aspect-ratio lock on or off.
 static inline bool MSBDTitleRecordHolds(bool hasRecord, bool atRecordedFill) { return hasRecord && atRecordedFill; }
+// 1.8.9.1 (B126): when our own desktop room changes around a filled or zoomed window -- the Dock moves between bottom, left and right, a side Dock's
+// thickness settles after an app opens or quits, Dock auto-hide switches, or the auto-hiding menu bar gives or takes back its top strip -- our own
+// relayout moves the window from the old desktop's Fill / Zoom frame to the new desktop's. While the window still held its record at the old target,
+// retarget the kept Fill / Zoom frame to the new target so the next title-bar double tap still goes back instead of re-applying Fill in place.
+static inline bool MSBDTitleRecordFollowsDesktop(bool keepsFrames, bool hasRecord, bool atRecordedFill, bool hasNewTarget) {
+    return keepsFrames && hasRecord && atRecordedFill && hasNewTarget;
+}
+// 1.8.9.1 (B126): a brief title-bar drag that began while the window held a Fill / Zoom record and snapped straight back onto that very recorded
+// target frame leaves the window at Fill / Zoom; keeping the record avoids stranding the window at Fill with no way back until a Window menu change.
+static inline bool MSBDTitleRecordKeepAfterSnap(bool keepsFrames, bool hadRecordAtStart, bool snappedBackToRecordedTarget) {
+    return keepsFrames && hadRecordAtStart && snappedBackToRecordedTarget;
+}
 // A double tap while SpringBoard is busy: what passes by itself in a moment (a transition -- the first of the two taps can be what brought the
 // window forward: Stage Manager's activation is a workspace transition, and the double tap came in the middle of it and was refused, iPad 2,
 // 7 Nov --, a turn being applied, the windows coming back) is waited for, a tenth of a second at a time, two seconds at most, and the double tap

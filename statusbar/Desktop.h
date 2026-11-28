@@ -265,14 +265,18 @@ static void DMDesktopDockUnder(NSString *reason, BOOL on, CGFloat low) {
     if (!gDockUnderReasons) gDockUnderReasons = [NSMutableSet set];
     if (on) [gDockUnderReasons addObject:reason]; else [gDockUnderReasons removeObject:reason];
     if (gDockUnderReasons.count) {
-        if (gDockLowered) return;
         // (the Dock part's floor first steps aside -- the Dock above an engine window over it, dock/Dock.x: its level hook turned this -3 into its
         //  1034 when the tick had not yet said a keyboard is up, and the Dock then stayed over our on-screen keyboard, its bottom row covered: Zetsu,
         //  a window over the Dock, Finder's search, Show Keyboard, M1 15.6.1, 1.6.0. The tick keeps it aside while a reason holds: DMDesktopDockIsUnder)
         { static void (*reassert)(BOOL) = NULL; if (!reassert) reassert = (void (*)(BOOL))dlsym(RTLD_DEFAULT, "DMDockReassertLevel"); if (reassert && !DMTestFlag("/tmp/msb-dockunder-old")) reassert(YES); }
+        if (gDockLowered) {
+            CGFloat want = [gDockUnderReasons containsObject:@"iconMenu"] ? MIN(low, -3.0) : low;
+            if (on && fabs(gDockLevelLow - want) > 0.01 && fabs(gDockLowered.windowLevel - gDockLevelLow) < 0.01) { gDockLevelLow = want; gDockLowered.windowLevel = want; }
+            return;
+        }
         for (UIWindow *w in DMAllWindows()) if ([NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] && !w.hidden && w.windowLevel > low) {
             gDockLowered = w; gDockLevelWas = w.windowLevel; gDockLevelLow = low; w.windowLevel = low;
-            DMLog([NSString stringWithFormat:@"[desktop] %@: the Dock's window from level %.0f to %.0f, under the Home Screen's, as for an app icon's menu", reason, gDockLevelWas, low]);
+            DMLog([NSString stringWithFormat:@"[desktop] %@: the Dock's window from level %.1f to %.1f", reason, gDockLevelWas, low]);
             break;
         }
         return;
@@ -357,7 +361,10 @@ static void DMKeyboardDockDecide(NSString *what) {
     BOOL forDock = own && DMKeyboardForTheDock();
     BOOL under = MSBDKeyboardDockUnder(own && !forDock, !CGRectIsEmpty(shown), sawHost, gKeyboardNotedDocked, CACurrentMediaTime() - gKeyboardNotedAt);   // (KeyboardDock.h)
     BOOL was = [gDockUnderReasons containsObject:@"keyboard"];
-    DMDesktopDockUnder(@"keyboard", under, -3.0);   // (-3: the level SpringBoard itself gives it under an icon menu)
+    int dockSide = DMDockSideNow([UIScreen mainScreen].bounds.size);
+    BOOL nativeFocus = gNativeFocusLock != nil && gNativeLayer && !gNativeLayer.hidden;
+    CGFloat dockLow = (CGFloat)MSBDKeyboardOwnDockLevel(dockSide, nativeFocus, nativeFocus ? gNativeLayer.windowLevel : -2.0);
+    DMDesktopDockUnder(@"keyboard", under, dockLow);   // (-3 at bottom; 5.5 / 25 at left or right so a side Dock never hides under the wallpaper)
     // (gOwnKeyboardFrame: our DOCKED keyboard only -- the drawn one, else the announced one while it counts. A hardware keyboard's bar (18: a
     //  71.5 pt strip as wide as the screen, clear but for its button) and 18's 3 pt placeholder leave it empty, as 15 does for the bar: a tap in
     //  that strip on an app window or the Dock is not one on our keyboard -- NativeWindow.h's DMPointOnOwnKeyboard then asks only the keyboard
@@ -376,6 +383,10 @@ static void DMKeyboardDockNote(NSNotification *n, NSString *what) {
     // (SpringBoard is told the frame in the screen's fixed, portrait space: in landscape it read {360, 0, 408, 1024} on the iPad 2)
     UIScreen *screen = [UIScreen mainScreen]; CGSize scr = screen.bounds.size;
     CGRect g = [screen.fixedCoordinateSpace convertRect:f toCoordinateSpace:screen.coordinateSpace];
+    if (MSBDKeyboardNoteForeignScene(f, g, scr)) {
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[kbdock] %@: foreign-scene end %@ (screen %@) ignored", what, NSStringFromCGRect(f), NSStringFromCGRect(g)]);
+        return;
+    }
     gKeyboardNotedDocked = MSBDKeyboardNoteDocked(f, g, scr); gKeyboardNotedAt = CACurrentMediaTime();   // (KeyboardDock.h)
     CGRect onScreen = MSBDKeyboardNoteOnScreen(f, g, scr);
     gOwnKeyboardNoted = DMDesktopOwnKeyboard() ? onScreen : CGRectZero;

@@ -2,6 +2,17 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.9.1
+
+### Fixes
+- A Dock on the left or right now stays in view while you type instead of disappearing until typing ends, and typing with a hardware or floating keyboard no longer hides the Dock.
+- Double-tapping a window's title bar again after Fill or Zoom now gives the window its size from before even after Dock changes, menu bar slides or a small drag that snaps back. It used to stop responding until you picked another layout.
+- Window > Bring All to Front now brings smaller windows hidden behind a larger window in front of it, instead of leaving them covered.
+- With the Stage Manager engine, and while the auto-hiding menu bar slides down, the first tap on a window's red, yellow or green button now works every time instead of sometimes doing nothing.
+- With the Stage Manager engine on iPadOS 18, resizing a window from its top edge is now smooth all the way to the menu bar instead of jumping mid-drag.
+- On iPadOS 18, iPadOS's grey pointer shape no longer shows behind the Mac resize pointers at window edges and corners.
+- Recent Windows Strip no longer runs its window check in the background while turned off.
+
 ## 1.8.9
 
 ### New

@@ -417,6 +417,8 @@ int main(int argc, char **argv) {
         }
 
         // ---- where it runs ----
+        check(MSBDRStripTickNeeded(YES, NO) && MSBDRStripTickNeeded(NO, YES) && !MSBDRStripTickNeeded(NO, NO),
+              @"the watcher skips the strip's step while it is off and nothing of it is active");
         check(MSBDRecentStripOS(15) && !MSBDRecentStripOS(14) && !MSBDRecentStripOS(16) && !MSBDRecentStripOS(17) && !MSBDRecentStripOS(18), @"iPadOS 15 only in this build (the pictures without waiting are read there)");
         check(kMSBDRStripMax == 6, @"at most 6 cards");
         printf("%d of %d checks passed\n", gChecks - gFails, gChecks);
